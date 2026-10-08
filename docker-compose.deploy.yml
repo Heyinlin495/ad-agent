@@ -30,7 +30,9 @@ services:
       - ASSETS_DIR=/app/assets
       - UPLOAD_DIR=/data/uploads
     ports:
-      - "8000:8000"
+      # 宿主机直接访问后端的端口：避开被占用的 8000，改到 8010；
+      # 域名(heyinlin.asia)侧仍走 host nginx -> web(8502) -> backend:8000(容器内)，不受影响
+      - "8010:8000"
     volumes:
       - ad_data:/data
     depends_on:
