@@ -14,6 +14,8 @@ data/
 .env.*
 !.env.example
 chroma/
+# 部署用密钥包裹（base64 of .env），含敏感信息，绝不入库
+DEPLOY_ENV_BASE64.txt
 
 # 前端缓存 / 依赖
 .streamlit/
