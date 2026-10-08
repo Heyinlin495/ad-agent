@@ -17,10 +17,13 @@ jobs:
   backend-tests:
     name: 后端 pytest
     runs-on: ubuntu-latest
-    # 用 core 依赖即可——重型库（torch/rembg/chromadb/sentence-transformers）
-    # 在测试里都被 mock/延迟导入，CI 按最轻依赖跑最快。
     env:
       PYTHONDONTWRITEBYTECODE: "1"
+      # 测试套件会直接构造 S3/OSS/MinIO 存储与 rembg 抠图等，必须装完整 requirements
+      # （core 缺 minio/oss2/rembg 等会让 test_storage/test_kb 等失败）。
+      # conftest 已把 ENVIRONMENT/各 PROVIDER 置为 mock；但 RATE_LIMIT 默认 60/min，
+      # 大套件一分钟内 API 调用会超限(429)，CI 上调避免偶发失败。
+      RATE_LIMIT_PER_MINUTE: "100000"
     defaults:
       run:
         working-directory: backend
@@ -37,18 +40,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('backend/requirements-core.txt') }}
+          key: pip-${{ runner.os }}-${{ hashFiles('backend/requirements.txt') }}
           restore-keys: |
             pip-${{ runner.os }}-
 
-      - name: 安装 core 依赖
+      - name: 安装完整依赖
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-core.txt
+          pip install -r requirements.txt
 
       - name: 跑测试
         run: pytest -q
-        # core 集成测试无需外部服务；如个别用例需要会在这里统一暴露
       - name: 上传 pytest 报告（失败时保留证据）
         if: failure()
         uses: actions/upload-artifact@v4
