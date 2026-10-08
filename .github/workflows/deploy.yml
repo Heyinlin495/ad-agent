@@ -1,0 +1,126 @@
+name: Deploy
+
+# 推到 main 时：构建并推送镜像到 GHCR，然后通过 SSH 在服务器上
+# git pull 最新代码并 docker compose 拉镜像 + 重起服务。
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}      # 也支持手动触发
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-image:
+    name: 构建镜像并推送 GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write          # 推送镜像 + 设置包可见性
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---- 后端（prod 需完整依赖 full）----
+      - name: 构建并推送 backend
+        id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}/backend
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest
+      - name: build/push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: backend/Dockerfile
+          build-args: BUILD_DEPS=full
+          push: true
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- 前端 ----
+      - name: 构建并推送 web
+        id: meta-web
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}/web
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest
+      - name: build/push web
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          file: web/Dockerfile
+          push: true
+          tags: ${{ steps.meta-web.outputs.tags }}
+          labels: ${{ steps.meta-web.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- 让镜像对服务器免登录可 pull（public）----
+      - name: 设置 GHCR 包为公开
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for img in backend web; do
+            gh api --method POST \
+              "repos/${{ github.repository }}/packages/container/$img" \
+              -f visibility=public --silent 2>/dev/null || true
+          done
+
+  deploy:
+    name: SSH 部署到服务器
+    runs-on: ubuntu-latest
+    needs: build-image
+    environment: production
+    steps:
+      - name: 通过 SSH 部署
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          DEPLOY_ENV_BASE64: ${{ secrets.DEPLOY_ENV_BASE64 }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          command_timeout: 15m
+          script: |
+            set -e
+            # sudo 兼容：若已是 root 或系统无 sudo 则直接用，否则用 sudo
+            S() { if [ "$(id -u)" = 0 ] || ! command -v sudo >/dev/null 2>&1; then "$@"; else sudo "$@"; fi; }
+            APP_DIR=/opt/ad-agent
+            S mkdir -p "$APP_DIR"
+            # 拉最新仓库代码（含部署 compose），首次为 clone
+            if [ -d "$APP_DIR/.git" ]; then
+              cd "$APP_DIR" && S git fetch origin main && S git reset --hard FETCH_HEAD
+            else
+              S git clone --depth 1 -b main https://github.com/${{ github.repository }}.git "$APP_DIR"
+            fi
+            # 首次部署把 secrets 写成服务器端 .env；之后可手动维护（此文件不提交）
+            if [ -n "$DEPLOY_ENV_BASE64" ]; then
+              echo "$DEPLOY_ENV_BASE64" | base64 -d | S tee "$APP_DIR/.docker.env" >/dev/null
+            fi
+            cd "$APP_DIR"
+            S docker compose -f docker-compose.deploy.yml pull
+            S docker compose -f docker-compose.deploy.yml up -d --remove-orphans
+            S docker image prune -f >/dev/null 2>&1 || true
+            echo '====== 部署完成: docker compose ps ======'
+            S docker compose -f docker-compose.deploy.yml ps

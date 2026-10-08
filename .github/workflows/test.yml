@@ -1,0 +1,72 @@
+name: Test
+
+# PR 自动跑测试。push 到 main 也会跑，作为发布前保护。
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: 后端 pytest
+    runs-on: ubuntu-latest
+    # 用 core 依赖即可——重型库（torch/rembg/chromadb/sentence-transformers）
+    # 在测试里都被 mock/延迟导入，CI 按最轻依赖跑最快。
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 装 Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 缓存 pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('backend/requirements-core.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: 安装 core 依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-core.txt
+
+      - name: 跑测试
+        run: pytest -q
+        # core 集成测试无需外部服务；如个别用例需要会在这里统一暴露
+      - name: 上传 pytest 报告（失败时保留证据）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-output
+          path: backend/.pytest_cache
+          retention-days: 7
+
+  web-static-check:
+    name: 前端静态校验
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 校验 import/导出 一致性
+        run: node tools/check.mjs

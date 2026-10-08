@@ -1,0 +1,93 @@
+# ============================================================
+# 服务器端部署 compose —— 全部通过 GHCR 镜像运行
+#
+# 由 GitHub Actions (deploy.yml) 在 push main 后自动执行：
+#   docker compose -f docker-compose.deploy.yml pull
+#   docker compose -f docker-compose.deploy.yml up -d
+#
+# 需要一个 .env（含各 LLM_KEY / DASHSCOPE_KEY 等，不入库）：
+#   - 首次部署：把 .env base64 后配置到 GitHub Secret `DEPLOY_ENV_BASE64`，
+#     Actions 会自动写到本目录 `.docker.env`。
+#   - 之后可在这台服务器上手动修改 /opt/ad-agent/.docker.env 并重启 backend。
+# ============================================================
+
+services:
+  backend:
+    image: ghcr.io/heyinlin495/ad-agent/backend:latest
+    container_name: ad-agent-backend
+    restart: unless-stopped
+    env_file:
+      - path: .docker.env
+        required: false
+      - path: .env
+        required: false
+    environment:
+      - ENVIRONMENT=production
+      - STORAGE_TYPE=minio
+      - S3_ENDPOINT=http://minio:9000
+      - S3_BUCKET=ad-agent
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - DATABASE_URL=postgresql+psycopg2://adagent:adagent@postgres:5432/ad_agent
+      - STORAGE_DIR=/data/storage
+      - ASSETS_DIR=/app/assets
+      - UPLOAD_DIR=/data/uploads
+    ports:
+      - "8000:8000"
+    volumes:
+      - ad_data:/data
+    depends_on:
+      - redis
+      - postgres
+      - minio
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4); sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  web:
+    image: ghcr.io/heyinlin495/ad-agent/web:latest
+    container_name: ad-agent-web
+    restart: unless-stopped
+    ports:
+      # 对外暴露前端；若服务器已有 nginx 反代，可把此段去掉只保留 127.0.0.1:8502
+      - "8502:80"
+    depends_on:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    container_name: ad-agent-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ad-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: adagent
+      POSTGRES_PASSWORD: adagent
+      POSTGRES_DB: ad_agent
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: ad-agent-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+
+volumes:
+  ad_data:
+  redis_data:
+  postgres_data:
+  minio_data:
