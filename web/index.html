@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AdAgent · 跨境电商 AI 广告助手</title>
+  <!--
+    内容安全策略（CSP）：
+      所有业务脚本都在 web/js/ 下的 ES module 里，HTML 中**没有 inline script**，
+      因此 script-src 不需要 'unsafe-inline'——这是抵御 XSS 的关键一层。
+      img-src 放开 http/https 与 data:/blob:：广告图可能来自 OSS 或本地 /files，
+      上传前预览走 data: URL。
+      connect-src 放开 http/https：开发态允许直连 localhost:8000 后端。
+      若前端与后端不同源部署，请把后端 origin 明确写进 connect-src / img-src。
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self';
+    style-src 'self';
+    img-src 'self' data: blob: http: https:;
+    font-src 'self' data:;
+    connect-src 'self' http: https:;
+    object-src 'none';
+    base-uri 'self';
+    form-action 'self';
+    frame-ancestors 'none';
+  " />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23615ced'/%3E%3Ctext x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3EA%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="css/style.css?v=99b6e455" />
+</head>
+<body>
+  <div class="app">
+
+    <!-- ============ 左侧边栏（千问风格） ============ -->
+    <aside class="sidebar" id="sidebar">
+      <div class="side-brand">
+        <div class="side-logo">A</div>
+        <span class="side-name">AdAgent</span>
+        <button class="side-collapse" id="btnCollapse" title="收起侧边栏" aria-label="收起侧边栏">«</button>
+      </div>
+
+      <button class="btn-new-chat" id="btnNewChat">＋ 新对话</button>
+
+      <nav class="side-nav" aria-label="主导航">
+        <button type="button" class="nav-item active" data-view="chat" aria-current="page">💬&nbsp; 广告生成</button>
+        <button type="button" class="nav-item" data-view="kb">📚&nbsp; 知识库</button>
+        <button type="button" class="nav-item" data-view="settings">⚙️&nbsp; 系统设置</button>
+        <button type="button" class="nav-item" data-view="about">📖&nbsp; 项目说明</button>
+      </nav>
+
+      <div class="side-section-title">
+        <span>历史对话</span>
+        <button class="link-btn" id="btnRefreshHistory" title="刷新历史" aria-label="刷新历史">⟳</button>
+      </div>
+      <div class="side-history" id="historyList" aria-live="polite">
+        <div class="side-empty">暂无历史任务</div>
+      </div>
+
+      <div class="side-footer">
+        <span class="dot" id="healthDot" aria-hidden="true"></span>
+        <span id="healthText" role="status">正在连接后端…</span>
+      </div>
+    </aside>
+
+    <!-- ============ 主区域 ============ -->
+    <main class="main">
+
+      <!-- 顶栏 -->
+      <header class="topbar">
+        <button class="icon-btn" id="btnExpand" title="展开侧边栏" aria-label="展开侧边栏" hidden>»</button>
+        <div class="topbar-title">AdAgent 智能体</div>
+      </header>
+
+      <!-- ===== 视图：聊天 ===== -->
+      <section class="view active" id="view-chat">
+        <div class="chat-scroll" id="chatScroll">
+
+          <!-- 空状态欢迎页 -->
+          <div class="empty-state" id="emptyState">
+            <div class="empty-logo">A</div>
+            <h1>你好，我是 AdAgent</h1>
+            <p class="empty-sub">上传一张产品图，我为你识别商品并生成<br/>多语言广告文案与平面广告图</p>
+            <div class="empty-chips" aria-hidden="true">
+              <span class="empty-chip">产品识别</span>
+              <span class="empty-chip">场景重塑</span>
+              <span class="empty-chip">合规审查</span>
+              <span class="empty-chip">Amazon 主图</span>
+            </div>
+            <div class="empty-hint">支持 JPG / PNG / WebP · 图片建议小于 10MB</div>
+          </div>
+
+          <!-- 消息列表 -->
+          <div class="messages" id="messages"></div>
+        </div>
+
+        <!-- 底部输入框 -->
+        <div class="composer-wrap">
+          <div class="composer">
+            <div class="chips">
+              <button class="chip" id="chipAttach">＋ 上传产品图</button>
+              <button class="chip" id="chipHint">✨ 补充说明</button>
+              <button class="chip" id="chipGuide">🎯 使用引导</button>
+              <button class="chip" id="chipParams">🌍 投放参数</button>
+            </div>
+            <div class="attach-preview" id="attachPreview" hidden>
+              <img id="attachImg" alt="待上传产品图" />
+              <span class="attach-name" id="attachName"></span>
+              <button class="attach-remove" id="btnRemoveAttach" title="移除">✕</button>
+            </div>
+            <div class="input-row">
+              <input type="file" id="fileInput" accept="image/jpeg,image/png,image/webp,.mpo,.heic,.heif,.bmp,.gif" hidden />
+              <button class="round-btn" id="btnAttach" title="上传图片" aria-label="上传图片">＋</button>
+              <textarea class="composer-input" id="chatInput" rows="1"
+                     placeholder="发送产品图开始生成广告，可附带补充说明（Enter 发送 / Shift+Enter 换行）"
+                     aria-label="补充说明"></textarea>
+              <button class="round-btn primary" id="btnSend" title="发送" aria-label="发送">➤</button>
+            </div>
+          </div>
+          <p class="disclaimer">内容由 AI 生成，请核实合规后再投放 · AdAgent v2</p>
+        </div>
+      </section>
+
+      <!-- ===== 视图：知识库 ===== -->
+      <section class="view" id="view-kb">
+        <div class="page narrow">
+          <h2 class="page-title">📚 知识库管理</h2>
+          <p class="page-desc">上传合规与文化知识文档，生成文案时将自动检索增强</p>
+
+          <div class="panel">
+            <h3>上传文档</h3>
+            <div class="kb-upload-row">
+              <input type="file" id="kbFile" accept=".txt,.md,.pdf,.docx,.csv" />
+              <input class="text-input" id="kbTitle" placeholder="标题（可选）" />
+              <input class="text-input short" id="kbCountry" placeholder="国家（可选，如 US）" />
+              <input class="text-input short" id="kbPlatform" placeholder="平台（可选）" />
+              <button class="btn primary" id="btnKbUpload">上传入库</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3>检索测试</h3>
+            <div class="kb-upload-row">
+              <input class="text-input grow" id="kbQuery" placeholder="输入检索词，例如：德国 广告 禁用词" />
+              <button class="btn" id="btnKbSearch">检索</button>
+            </div>
+            <div id="kbSearchResults" class="kb-results"></div>
+          </div>
+
+          <div class="panel">
+            <h3>文档列表</h3>
+            <div id="kbDocList" class="kb-list"><div class="side-empty">加载中…</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== 视图：系统设置 ===== -->
+      <section class="view" id="view-settings">
+        <div class="page narrow">
+          <h2 class="page-title">⚙️ 系统设置</h2>
+          <p class="page-desc">后端运行配置（只读，来自 /health 与 /settings 接口）</p>
+          <div id="settingsGrid" class="settings-grid"><div class="side-empty">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ===== 视图：项目说明 ===== -->
+      <section class="view" id="view-about">
+        <div class="page doc-page">
+          <h2 class="page-title">📖 项目说明</h2>
+          <p class="page-desc">AdAgent 项目结构、技术栈与工作流程说明 · 作者：何胤霖</p>
+
+          <div class="doc-body">
+
+            <h3>🎯 项目简介</h3>
+            <p>
+              <strong>AdAgent</strong> 是一个面向跨境电商的 AI 广告智能体：上传一张产品图，
+              自动识别产品信息，经「产品分析 → 营销定位 → 卖点提炼 → 广告策划 → 合规审查 →
+              提示词生成 → 图片生成」LangGraph 七阶段流水线，
+              一键产出多语言广告文案与平面广告图（含 Amazon 主图规格）。
+            </p>
+
+            <h3>🧩 技术栈</h3>
+            <table class="doc-table">
+              <thead><tr><th>层次</th><th>技术选型</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><span class="doc-tag">后端</span></td><td>Python 3.11 · FastAPI · LangGraph</td><td>智能体流水线编排 + REST API</td></tr>
+                <tr><td><span class="doc-tag">LLM</span></td><td>OpenAI 兼容接口 · Anthropic · Mock 兜底</td><td>工厂模式切换，无 Key 时可全流程演示</td></tr>
+                <tr><td><span class="doc-tag">存储</span></td><td>SQLite · Alembic 迁移 · MinIO</td><td>任务/产品数据与生成图片对象存储</td></tr>
+                <tr><td><span class="doc-tag">向量</span></td><td>Chroma / Milvus · BGE Embedding</td><td>知识库向量检索</td></tr>
+                <tr><td><span class="doc-tag">RAG</span></td><td>BM25 混合检索 · Rerank · 文本切分</td><td>合规与文化知识增强检索</td></tr>
+                <tr><td><span class="doc-tag">图像</span></td><td>Pillow 模板合成 · 背景移除 · 品类自适应版式</td><td>按平台尺寸合成广告图，hero / magazine 版式自适应</td></tr>
+                <tr><td><span class="doc-tag">前端</span></td><td>原生 HTML / CSS / ES Module</td><td>零构建模块化单页应用，nginx 反代部署</td></tr>
+                <tr><td><span class="doc-tag">部署</span></td><td>Docker Compose · Uvicorn · Nginx</td><td>backend / web / postgres / redis / minio</td></tr>
+              </tbody>
+            </table>
+
+            <h3>🗂 项目结构</h3>
+            <pre class="doc-tree">ad-agent/
+├── backend/                    # FastAPI 后端
+│   ├── app/
+│   │   ├── main.py             # 应用入口（路由挂载、CORS、静态文件）
+│   │   ├── api/v1/             # REST 接口层
+│   │   │   ├── products.py     #   产品识别（多模态 Vision）
+│   │   │   ├── ads.py          #   广告任务：创建/详情/SSE 流式进度/取消/局部重生成
+│   │   │   ├── history.py      #   历史任务分页查询
+│   │   │   ├── kb.py           #   知识库文档管理
+│   │   │   ├── health.py       #   健康检查与运行配置
+│   │   │   └── router.py       #   路由聚合（前缀 /api/v1）
+│   │   ├── agents/             # LangGraph 智能体
+│   │   │   ├── graph.py        #   状态图：7 节点流水线编排 + 合规回环
+│   │   │   ├── nodes.py        #   各节点实现（分析/定位/卖点/策划/合规/提示词/生图）
+│   │   │   ├── category_rules.py   # 品类 → 背景/灯光/标签/图标适配规则
+│   │   │   ├── state.py        #   共享状态定义
+│   │   │   └── tools.py        #   节点工具函数
+│   │   ├── services/           # 业务服务层
+│   │   │   ├── task_service.py #   任务生命周期 + 后台执行 + SSE 推送
+│   │   │   ├── product_service.py  # 产品识别与持久化
+│   │   │   ├── kb_service.py   #   知识库入库与检索
+│   │   │   ├── storage.py      #   MinIO/本地对象存储
+│   │   │   └── llm/            #   LLM 客户端（factory 多供应商）
+│   │   ├── rag/                # RAG 检索
+│   │   │   ├── embedding.py · vector_store.py · milvus_store.py
+│   │   │   ├── retriever.py    #   混合检索 + Rerank
+│   │   │   ├── bm25.py · splitter.py
+│   │   ├── image/              # 图像合成
+│   │   │   ├── composer.py     #   模板版式合成
+│   │   │   ├── generator.py · preprocess.py
+│   │   │   └── fonts.py
+│   │   ├── prompts/            # LLM 提示词模板（.txt × 6）
+│   │   ├── models/ · schemas/  # SQLAlchemy 模型 / Pydantic 契约
+│   │   └── core/               # 配置、数据库、日志、限流、异常
+│   ├── alembic/                # 数据库迁移
+│   └── tests/                  # pytest（产品/任务/知识库）
+│
+├── web/                        # 聊天式前端（零构建原生 ESM）
+│   ├── index.html              # 单页结构：侧边栏 + 聊天气泡 + 三个管理页
+│   ├── css/style.css           # 设计系统与全部样式
+│   ├── js/
+│   │   ├── main.js             # 入口：模块装配、事件绑定、启动探测
+│   │   ├── shell.js            # 视图切换与侧边栏
+│   │   ├── config.js           # API 地址配置（控制台可 setApiBase 切换）
+│   │   ├── constants.js        # 国家/语言/平台/风格/尺寸/流程节点
+│   │   ├── core/               # api（超时与错误信封）/ dom / state / modal / wiring
+│   │   └── views/              # composer / chat / history / kb / settings
+│   └── tools/                  # 版本戳 stamp.mjs · 模块链接检查 check.mjs · jsdom 集成测试 dom-test.mjs
+│
+├── docker-compose.yml          # backend · web · postgres · redis · minio
+├── start.bat / start.sh        # 一键启动（后端 8000 + 前端 8502）
+└── stop.bat / stop.sh          # 一键停止
+</pre>
+
+            <h3>🔄 生成流水线（七阶段）</h3>
+            <ol class="doc-flow">
+              <li><b>产品分析</b> — 多模态模型识别产品外观/材质/结构，并支持人工修正覆盖</li>
+              <li><b>营销定位</b> — 结合知识库输出产品类型、目标用户、使用场景与情绪基调</li>
+              <li><b>卖点提炼</b> — 提炼 3~5 个核心卖点，每条带事实依据与转化优先级</li>
+              <li><b>广告策划</b> — 确定广告主题 + 构图 + 版式，产出多版多语言文案与平台适配</li>
+              <li><b>合规审查</b> — RAG 检索当地广告法规，标记风险词并给修改建议（不过则重写）</li>
+              <li><b>提示词生成</b> — 把策划结论落实为可直接生图的背景提示词与配色/版式参数</li>
+              <li><b>图片生成</b> — 生成背景主视觉，与真实产品合成（产品 100% 保真不变形）</li>
+            </ol>
+
+            <h3>🔌 主要接口</h3>
+            <table class="doc-table">
+              <thead><tr><th>方法</th><th>路径</th><th>用途</th></tr></thead>
+              <tbody>
+                <tr><td><code>POST</code></td><td>/api/v1/products/analyze</td><td>上传图片识别产品</td></tr>
+                <tr><td><code>POST</code></td><td>/api/v1/ads/generate</td><td>创建广告生成任务</td></tr>
+                <tr><td><code>GET</code></td><td>/api/v1/ads/{id}/stream</td><td>SSE 实时进度推送</td></tr>
+                <tr><td><code>POST</code></td><td>/api/v1/ads/{id}/cancel</td><td>取消任务</td></tr>
+                <tr><td><code>POST</code></td><td>/api/v1/ads/{id}/regenerate</td><td>按模式局部重生成</td></tr>
+                <tr><td><code>GET</code></td><td>/api/v1/history</td><td>历史任务分页</td></tr>
+                <tr><td><code>POST</code></td><td>/api/v1/kb/documents · /api/v1/kb/search</td><td>知识库入库 / 检索</td></tr>
+                <tr><td><code>GET</code></td><td>/api/v1/health · /api/v1/settings</td><td>健康检查 / 运行配置</td></tr>
+                <tr><td><code>GET</code></td><td>/api/v1/metrics</td><td>运行指标（任务成功率 / LLM 调用与成本）</td></tr>
+              </tbody>
+            </table>
+
+            <h3>🚀 快速启动</h3>
+            <pre class="doc-code"><span class="c-comment"># Docker（推荐，含前端/后端/存储全家桶）</span>
+docker compose up -d --build
+
+<span class="c-comment"># 本地开发：双击 start.bat（或 ./start.sh）</span>
+<span class="c-comment">#   后端 API   → http://localhost:8000/docs</span>
+<span class="c-comment">#   聊天界面   → http://localhost:8502</span></pre>
+
+            <div class="doc-footer">
+              <span>作者：<strong>何胤霖</strong></span>
+              <span>AdAgent v2 · 内容由 AI 生成，投放前请核实合规</span>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- 轻提示（屏幕阅读器可播报） -->
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <!-- 确认 / 提示弹窗（替代原生 confirm / alert） -->
+  <div class="modal" id="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-title" id="modalTitle"></div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-actions">
+        <button class="btn" id="modalCancel" type="button">取消</button>
+        <button class="btn primary" id="modalOk" type="button">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 图片预览遮罩 -->
+  <div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="图片预览">
+    <button class="lb-close" id="lbClose" title="关闭" aria-label="关闭预览">✕</button>
+    <img id="lbImg" src="" alt="图片预览" />
+    <a class="lb-download" id="lbDownload" download>⬇ 下载原图</a>
+  </div>
+
+  <script type="module" src="js/main.js?v=99b6e455"></script>
+</body>
+</html>

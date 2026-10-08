@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AdAgent · 生成过程视觉优化效果预览</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  /* 仅预览页自身需要的补充样式（不改动项目样式） */
+  body { overflow: auto; }
+  .preview-note {
+    max-width: 780px; margin: 18px auto 0;
+    padding: 10px 14px; border-radius: 10px;
+    background: #efedfd; color: #4b3fe0;
+    font-size: 13px; line-height: 1.7;
+  }
+  .preview-note b { font-weight: 700; }
+  .demo-img-1 { background: linear-gradient(135deg,#f5d0c5,#e8b4a0 55%,#d9a68f); }
+  .demo-img-2 { background: linear-gradient(135deg,#c5d8f5,#a0bce8 55%,#8fa8d9); }
+  .demo-img-3 { background: linear-gradient(135deg,#d8f5c5,#b4e8a0 55%,#a0d98f); }
+</style>
+</head>
+<body>
+<div class="app">
+  <main class="main" style="width:100%">
+    <header class="topbar">
+      <div class="topbar-title">AdAgent 智能体 · 生成过程效果预览</div>
+    </header>
+
+    <section class="view active" id="view-chat">
+      <div class="chat-scroll" id="chatScroll">
+
+        <div class="preview-note">
+          <b>本页说明：</b>用项目真实的 style.css 与真实卡片标记还原界面。
+          上半部分是<b>「生成中」状态</b>——只有一张紧凑的进度卡片（进度条 + 7 阶段 + 已用时长），
+          <b>没有空骨架屏占位</b>；下半部分是生成完成后的结果卡片，供对照。
+        </div>
+
+        <div class="messages" style="margin-top:18px">
+
+          <!-- ===== 生成中状态（优化后：只有进度卡片） ===== -->
+          <div class="msg bot">
+            <div class="avatar" aria-hidden="true">A</div>
+            <div class="bubble">
+              <div>⏳ 广告生成中，任务 <b>#1024</b>：</div>
+              <div class="card progress-card" data-task="1024">
+                <div class="card-title">🚀 生成进度</div>
+                <div class="progress-wrap">
+                  <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="46" aria-label="广告生成进度">
+                    <div class="progress-fill pg-fill" style="width:46%"></div>
+                  </div>
+                  <div class="progress-meta">
+                    <span class="pg-node">广告策划</span>
+                    <span class="loading-elapsed">47s</span>
+                    <span class="pg-pct">46%</span>
+                  </div>
+                </div>
+                <div class="steps-line">
+                  <span class="step-tag done" data-stage="0"><i class="step-idx">1</i><span class="step-name">产品分析</span></span>
+                  <span class="step-tag done" data-stage="1"><i class="step-idx">2</i><span class="step-name">营销定位</span></span>
+                  <span class="step-tag done" data-stage="2"><i class="step-idx">3</i><span class="step-name">卖点提炼</span></span>
+                  <span class="step-tag active" data-stage="3"><i class="step-idx">4</i><span class="step-name">广告策划</span></span>
+                  <span class="step-tag" data-stage="4"><i class="step-idx">5</i><span class="step-name">合规审查</span></span>
+                  <span class="step-tag" data-stage="5"><i class="step-idx">6</i><span class="step-name">提示词生成</span></span>
+                  <span class="step-tag" data-stage="6"><i class="step-idx">7</i><span class="step-name">图片生成</span></span>
+                </div>
+                <div class="card-actions"><button class="btn danger" type="button">取消任务</button></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ===== 生成完成（对照） ===== -->
+          <div class="msg bot">
+            <div class="avatar" aria-hidden="true">A</div>
+            <div class="bubble">
+              <div>✅ 生成完成！结果如下：</div>
+              <div class="card" data-task="1023">
+                <div class="theme-line">🎯 广告主题：<span> Urban Commuter — 通勤也自在</span></div>
+                <div class="card-title">✍️ 广告文案（3 个版本）</div>
+                <div class="copy-item" data-version="1">
+                  <div class="copy-head">
+                    <h4>版本 1</h4>
+                    <span class="badge success">✓ 合规通过</span>
+                    <button class="btn" style="margin-left:auto" type="button">📋 复制文案</button>
+                  </div>
+                  <div class="copy-headline">Move Light. Arrive Sharp.</div>
+                  <div class="copy-sub">Feather-light frame built for city speed.</div>
+                  <ul class="copy-bullets"><li>Only 210g — wear-all-day comfort</li><li>Water-repellent shell for sudden rain</li></ul>
+                  <span class="copy-cta">Shop the drop →</span>
+                </div>
+                <div class="card-title" style="margin-top:14px">🖼 广告图（3 张，点击可预览）</div>
+                <div class="gallery">
+                  <div class="gallery-item">
+                    <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='108' height='108'%3E%3Crect width='108' height='108' fill='%23e8b4a0'/%3E%3Ccircle cx='54' cy='48' r='26' fill='%23c98d74'/%3E%3Crect x='34' y='80' width='40' height='8' rx='4' fill='%23fff' opacity='.7'/%3E%3C/svg%3E" alt="广告图 1:1" style="height:130px;object-fit:cover" />
+                    <div class="gallery-meta"><span>1:1 (1080×1080)</span><a href="#">下载</a></div>
+                  </div>
+                  <div class="gallery-item">
+                    <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='108' height='108'%3E%3Crect width='108' height='108' fill='%23a0bce8'/%3E%3Ccircle cx='54' cy='48' r='26' fill='%237a94c9'/%3E%3Crect x='34' y='80' width='40' height='8' rx='4' fill='%23fff' opacity='.7'/%3E%3C/svg%3E" alt="广告图 4:5" style="height:130px;object-fit:cover" />
+                    <div class="gallery-meta"><span>4:5 (1080×1350)</span><a href="#">下载</a></div>
+                  </div>
+                  <div class="gallery-item">
+                    <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='108' height='108'%3E%3Crect width='108' height='108' fill='%23b4e8a0'/%3E%3Ccircle cx='54' cy='48' r='26' fill='%2389bd72'/%3E%3Crect x='34' y='80' width='40' height='8' rx='4' fill='%23fff' opacity='.7'/%3E%3C/svg%3E" alt="广告图 9:16" style="height:130px;object-fit:cover" />
+                    <div class="gallery-meta"><span>9:16 竖版 (1080×1920)</span><a href="#">下载</a></div>
+                  </div>
+                </div>
+                <div class="card-title" style="margin-top:14px">🎨 对广告图不满意？换个风格重生成</div>
+                <div class="regen-tools">
+                  <div class="chip-row">
+                    <button class="chip-btn" type="button">柔和的奶油色背景</button>
+                    <button class="chip-btn" type="button">极简影棚风</button>
+                    <button class="chip-btn" type="button">户外自然光</button>
+                  </div>
+                  <div class="card-actions" style="margin-top:8px">
+                    <input class="text-input regen-input" placeholder="或自定：如“柔和的奶油色背景，偏暖，杂志风格”…" />
+                    <button class="btn primary" type="button">✨ 重新生成广告图</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

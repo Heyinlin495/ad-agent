@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AdAgent 全栈优化修复报告</title>
+<style>
+  :root {
+    --brand: #615ced;
+    --brand-soft: #efedfe;
+    --bg: #f7f7fb;
+    --panel: #ffffff;
+    --line: #e6e6ef;
+    --text: #1c1c28;
+    --muted: #6b6b7e;
+    --ok: #0d9488;
+    --ok-soft: #e6f7f5;
+    --warn: #b45309;
+    --warn-soft: #fef6e7;
+    --danger: #dc2626;
+    --danger-soft: #fdecec;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 64px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.7; font-size: 15px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  header { margin-bottom: 28px; }
+  h1 { font-size: 27px; margin: 0 0 8px; letter-spacing: -0.3px; }
+  .sub { color: var(--muted); font-size: 14px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 24px 0 32px; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+  .kpi .n { font-size: 25px; font-weight: 700; color: var(--brand); line-height: 1.2; }
+  .kpi .l { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+  .kpi.ok .n { color: var(--ok); }
+  h2 { font-size: 19px; margin: 34px 0 14px; padding-left: 12px; border-left: 4px solid var(--brand); }
+  h3 { font-size: 15.5px; margin: 22px 0 10px; color: var(--brand); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin-bottom: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--panel); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: #f2f2f8; font-weight: 600; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  code { background: #f1f1f7; padding: 1.5px 6px; border-radius: 5px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; color: #4b3fc4; }
+  .tag { display: inline-block; padding: 1.5px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+  .t-p0 { background: var(--danger-soft); color: var(--danger); }
+  .t-p1 { background: var(--warn-soft); color: var(--warn); }
+  .t-ok { background: var(--ok-soft); color: var(--ok); }
+  .t-fe { background: var(--brand-soft); color: var(--brand); }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  .note { background: var(--brand-soft); border-radius: 10px; padding: 13px 16px; font-size: 13.5px; margin: 14px 0; }
+  .why { color: var(--muted); font-size: 12.5px; display: block; margin-top: 3px; }
+  footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>AdAgent 全栈优化修复报告</h1>
+  <div class="sub">按审计报告定义的顺序分五批执行 · 后端 7.9k 行 / 前端 2.8k 行 · 含回归测试与端到端验证</div>
+</header>
+
+<div class="kpis">
+  <div class="kpi"><div class="n">24</div><div class="l">已修复问题（后端 17 / 前端 7）</div></div>
+  <div class="kpi ok"><div class="n">98</div><div class="l">后端测试全绿</div></div>
+  <div class="kpi ok"><div class="n">105</div><div class="l">前端测试全绿</div></div>
+  <div class="kpi"><div class="n">67</div><div class="l">新增回归用例</div></div>
+</div>
+
+<h2>一、第一批 · 并发正确性</h2>
+<table>
+  <tr><th>级别</th><th>问题</th><th>修复</th></tr>
+  <tr>
+    <td><span class="tag t-p0">P0</span></td>
+    <td>SQLite 未开 WAL，4 个任务线程 + 请求线程并发写同一 db 文件，默认 5s 锁等待 → 随机 <code>database is locked</code>，被 <code>run_task</code> 的 except 吞成「任务失败」</td>
+    <td><code>core/database.py</code> 通过 <code>@event.listens_for(engine,"connect")</code> 挂 <code>journal_mode=WAL</code> / <code>busy_timeout=30000</code> / <code>synchronous=NORMAL</code> / <code>foreign_keys=ON</code>；<code>connect_args</code> 加 <code>timeout:30</code></td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p0">P0</span></td>
+    <td>线程池待办队列无上限、无背压；海量提交 → 每个待办持有闭包与图片字节，内存无上限增长</td>
+    <td><code>task_runner.py</code> 自维护 <code>_inflight</code> 计数（Lock 保护），超 <code>_MAX_INFLIGHT</code>（默认 <code>workers×2</code>，可配 <code>TASK_MAX_INFLIGHT</code>）抛 <code>QueueFullError</code> → API 层转 429（code 42901）</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p0">P0</span></td>
+    <td><code>_progress_sink</code> 是模块级全局变量，4 个任务线程并行时互相覆盖，A 任务进度写到 B 任务通道 → 进度串台</td>
+    <td>改为 <code>contextvars.ContextVar</code>（线程池每任务线程独立 Context，天然隔离）；<code>set_progress_sink</code> 返回 token，新增 <code>reset_progress_sink(token)</code> 配对还原</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p0">P0</span></td>
+    <td><code>compliance_check</code> 无 try/except，LLM 返回非 JSON → <code>JSONDecodeError</code> 直接打死整张图（与 <code>qa_agent</code> 有降级不一致）</td>
+    <td>包 try/except，异常时返回 <code>passed=True</code> + 「合规审查未执行，建议人工复核」feedback，流水线继续</td>
+  </tr>
+</table>
+
+<h2>二、第二批 · 安全</h2>
+<table>
+  <tr><th>级别</th><th>问题</th><th>修复</th></tr>
+  <tr>
+    <td><span class="tag t-p0">P0</span></td>
+    <td>图片只限压缩后字节数，无像素上限：10MB PNG 可解压成数亿像素 → 内存炸弹</td>
+    <td><code>image/preprocess.py</code> 设 <code>Image.MAX_IMAGE_PIXELS = 40_000_000</code>，<code>open()</code> 后 <code>load()</code> 前检查 <code>pw×ph</code>，并捕获 <code>Image.DecompressionBombError</code> → <code>ImageProcessError</code></td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p1">P1</span></td>
+    <td>SSRF：<code>absolute_path(url)</code> 对任意 URL 直接 <code>httpx.get</code>，无白名单，可探测内网</td>
+    <td>新增 <code>assert_safe_remote_url(url, allowed_prefixes)</code> 前缀白名单 + <code>_is_private_host()</code>
+      <span class="why">关键决策：<code>_is_private_host</code> <b>只对 IP 字面量判定，域名不做 DNS 解析</b>——沙箱/生产的 DNS 会把公网域名解析到私网段（如 198.18.0.0/15）导致误判，前缀白名单才是主控制手段</span>
+    </td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p1">P1</span></td>
+    <td><code>/files</code> 中间件用<b>原始 path</b> 判 <code>startswith("/files/")</code>，漏掉 <code>%2e%2e</code> / <code>/files/../files/x</code>；防护依赖框架二次解析，一旦解析结果不一致即可绕过</td>
+    <td>新增 <code>normalize_request_path()</code>（<code>unquote</code> + <code>PurePosixPath</code>，返回 <code>(规范化路径, 是否穿越)</code>）；拒 <code>..</code> 穿越、基于规范化路径判前缀、<b>签名也基于规范化路径</b>；统一 403 信封 <code>{code:40300,…}</code></td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p0">P0</span></td>
+    <td>任务状态机竞态：cancel / regenerate / 执行线程终态写入都是「读-改-写」，无原子性 → 取消被静默推翻、已完成任务被标取消</td>
+    <td>新增 <code>_finish_task()</code> 条件 UPDATE（只在 <code>status NOT IN ('success','failed','cancelled')</code> 时写终态）；<code>cancel_task</code> / <code>schedule_regenerate</code> 均改原子条件 UPDATE 消除 TOCTOU</td>
+  </tr>
+</table>
+
+<h2>三、第三批 · 性能与健壮性</h2>
+<table>
+  <tr><th>级别</th><th>问题</th><th>修复</th></tr>
+  <tr>
+    <td><span class="tag t-p1">P1</span></td>
+    <td>SSE 生成器内直接跑<b>同步阻塞</b> DB 查询 → 卡死整个 event loop，期间所有并发请求被拖住；且无断连检测，浏览器关闭后连接空转泄漏</td>
+    <td>查库改 <code>await asyncio.to_thread(...)</code>；每轮检查 <code>request.is_disconnected()</code>；加 <code>SSE_MAX_DURATION=1800s</code> 兜底回收半开连接
+      <span class="why">实测：流式进行中并发打 health 仍为 <b>3ms</b></span>
+    </td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p1">P1</span></td>
+    <td><code>rerank()</code> 每次调用都 <code>CrossEncoder(model)</code> 重建模型（数百 MB 权重、数秒级加载），一条流水线重复多次，开销远超推理本身</td>
+    <td><code>rag/bm25.py</code> 新增 <code>_get_cross_encoder()</code> 按模型名缓存；<b>加载失败也缓存</b>，避免反复重试注定失败的加载</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p1">P1</span></td>
+    <td>KB 检索缓存 key 含用户传入的 <code>country/platform/category</code>，属外部可控输入，无上界 → 构造大量过滤组合即可撑爆内存（value 还是整个语料 + BM25 索引）</td>
+    <td>两个缓存改 <code>OrderedDict</code> + <code>_CACHE_MAX_ENTRIES=64</code> LRU 淘汰；命中走无锁快路径并 <code>move_to_end</code> 更新 LRU 顺序</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p1">P1</span></td>
+    <td><code>get_status</code> 靠 lazy relationship 在属性访问时各发一条 SQL，<code>/stream</code> 每 0.5s 轮询一次 → N+1 放大成「轮询次数 × 3」条查询</td>
+    <td>改 <code>selectinload(copy_versions, images)</code> 显式一次性预加载，固定 3 条查询且同批完成</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p1">P1</span></td>
+    <td><code>extract_json</code> 用 <code>text[find("{"):rfind("}")]</code> 截取：输出含多个 JSON 片段或说明文字里出现花括号时会截出非法片段</td>
+    <td>重写为「原文 → 代码块 → <b>平衡括号扫描</b>」三段式：新增 <code>_balanced_json_object()</code> 按字符扫描并跟踪字符串状态（正确跳过字符串内花括号与转义），兼容顶层单对象数组；失败抛 <code>ValueError</code> 便于上层统一降级</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p1">P1</span></td>
+    <td><code>Retry-After</code> 只用 <code>isdigit()</code> 判断，漏掉 RFC 7231 允许的 <b>HTTP-date</b> 格式 → 错误退回指数退避，等待时间与上游要求不符；<code>anthropic.py</code> 用 tenacity 完全<b>不读</b> Retry-After</td>
+    <td>新增 <code>_parse_retry_after()</code> 同时支持秒数与 HTTP-date；<code>anthropic.py</code> 去掉 tenacity 改手写重试并复用该解析（含网络异常重试）</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p1">P1</span></td>
+    <td><code>recover_orphan_tasks</code> 启动时把<b>所有</b> running/pending 标记为 failed：多 worker 部署下 A 进程重启会误杀 B 进程正在执行的任务</td>
+    <td>改按<b>心跳新鲜度</b>判定：只回收 <code>updated_at &lt; now - 4×PROGRESS_HEARTBEAT_SEC</code>（默认 12s）的；真在跑的任务每次进度落库都会刷新 <code>updated_at</code>，不会被误杀</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-p1">P1</span></td>
+    <td>内存限流器 <code>_hits</code> 的 key 来自客户端 IP，外部可控且无上限 → 大量源 IP 打过来即内存泄漏</td>
+    <td><code>RateLimiter</code> 加 <code>max_keys=10000</code> 上界：超限即扫（回收窗口内空桶 + 按插入序淘汰最老），保证是<b>硬上界</b>而非「平均意义上」有界</td>
+  </tr>
+</table>
+
+<h2>四、第四批 · 前端</h2>
+<table>
+  <tr><th>级别</th><th>问题</th><th>修复</th></tr>
+  <tr>
+    <td><span class="tag t-fe">安全</span></td>
+    <td>无 CSP；<code>addUserMsg</code> 的 <code>dataUrl</code> 直接拼进 <code>src</code> 未转义，一旦上游改用远端 URL，<code>"</code> 即可闭合属性注入（属性型 XSS）；<code>galleryHtml</code> 图片地址同理</td>
+    <td><code>index.html</code> 加 CSP（<code>script-src 'self'</code>：全站零 inline script，故不需要 <code>unsafe-inline</code>）+ referrer policy；<code>core/dom.js</code> 新增 <code>safeUrl()</code> 协议白名单；两处图片地址过 <code>safeUrl</code> + <code>esc</code>
+      <span class="why">safeUrl 剥离控制字符后比对，挡住 <code>java\nscript:</code> 这类变形；只放行 http/https/站内相对路径/data:image/blob:</span>
+    </td>
+  </tr>
+  <tr>
+    <td><span class="tag t-fe">体验</span></td>
+    <td>图片懒加载无占位：地址缺失/签名过期/对象已删除时出现破图与网格空洞</td>
+    <td>非法地址直接渲染 <code>.gallery-ph</code> 占位块（带 <code>aria-label</code>）而非 <code>&lt;img&gt;</code>；新增 <code>installImageFallback()</code> 在<b>捕获阶段</b>接管 img <code>error</code> 事件原地替换为占位块；新增 <code>.gallery-ph</code> 样式</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-fe">性能</span></td>
+    <td><code>probeApiBase</code> 串行探测 3 个地址，每个 3s 超时 → 后端不可达时最坏 9s 才首屏可用</td>
+    <td>改 <code>Promise.all</code> 并发探测，只需最慢的一个（≤3s）；同源优先级仍最高，按顺序取第一个成功者</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-fe">回归</span></td>
+    <td>新增能力需要测试守住</td>
+    <td><code>tools/dom-test.mjs</code> 新增 <code>[14] safeUrl</code>（8 项）与 <code>[15] 广告图占位降级</code>（5 项）两节</td>
+  </tr>
+</table>
+
+<h2>五、验证结果</h2>
+<div class="card">
+  <h3>自动化测试</h3>
+  <ul>
+    <li>后端：<b>98 项全绿</b>（原 78 + 新增 <code>tests/test_robustness.py</code> 18 项 + 第二批 pipeline 回归 2 项）</li>
+    <li>前端：<code>check.mjs</code> 17 模块导入/导出一致性 OK；<code>dom-test.mjs</code> <b>105 项全绿</b>（原 58 → 71 → 105，第二批新增「事件委托」11 项 +「骨架屏/加载态」23 项）</li>
+    <li><code>stamp.mjs</code> 已按内容哈希自动更新版本戳，无需手工 bump</li>
+    <li>每个新增回归守卫都做了<b>回退验证</b>（去掉守卫 → 测试 FAILED，恢复 → PASSED），确保不是空跑测试</li>
+  </ul>
+  <h3>端到端实跑</h3>
+  <ul>
+    <li>真实链路跑通：产品识别 → 生成任务 → <code>success</code> / 100% / qa_check，产出文案 + 广告图，OSS 地址 HTTP 200</li>
+    <li>SSE 流式期间并发打 <code>/health</code> 稳定 <b>3ms</b>，确认 event loop 未被阻塞</li>
+    <li>广告图渲染正常（magazine 版式、文字未压产品主体），确认后端重构未影响合成链路</li>
+    <li>后端 :8000 健康、前端 :8502 已提供新代码</li>
+  </ul>
+</div>
+
+<h2>六、第二批修复（承接上一批「仍未处理」列表）</h2>
+<div class="card">
+  <table>
+    <tr><th>项</th><th>类型</th><th>改动与理由</th></tr>
+    <tr>
+      <td>LangGraph 权威合并</td><td><span class="tag t-p0">正确性</span></td>
+      <td><code>run_graph</code> 弃用 <code>final_state.update(node_output)</code> 浅合并，改读 <code>graph.get_state(config).values</code>；<code>build_graph</code> 挂 <code>MemorySaver</code> 并按 <code>thread_id</code> 隔离
+        <span class="why">改这里才暴露出真缺陷：composer 会<b>就地修改</b> <code>design</code> 写入 <code>_subject_box</code>，而 <code>image_compose_node</code> 没把它回传到 state。旧浅合并因为对象是同一个而掩盖了问题 → 权威合并后 <code>qa_check_node</code> 读不到几何信息，「文字压主体」检查被<b>静默跳过</b>。已修：三处 return 补 <code>"design": design</code></span></td>
+    </tr>
+    <tr>
+      <td><code>chat.js</code> 拆分</td><td><span class="tag t-fe">可维护</span></td>
+      <td>630 行 → <b>约 230 行门面</b>，实现拆为 <code>chat-render</code>（纯渲染）/ <code>chat-stream</code>（SSE 生命周期）/ <code>chat-tools</code>（事件委托），<code>main.js</code> 与测试的 import 点零改动
+        <span class="why">循环依赖用运行时注入规避（<code>bindStreamRenderers</code> / <code>bindFlowHandlers</code>），不互相 import</span></td>
+    </tr>
+    <tr>
+      <td>卡片事件委托</td><td><span class="tag t-p1">健壮</span></td>
+      <td>动态卡片按钮由 <code>onclick</code> 直赋全改 <code>data-action</code> + <code>#messages</code> 单一委托；结果文案按 <code>card.dataset.task</code> 查 <code>state.results</code> 快照
+        <span class="why">绑定成本从「按钮数 × 卡片数」降为常数 1；新增幂等守卫——重复装配会让一次点击生成两张参数卡片（新测试抓到的真 bug）</span></td>
+    </tr>
+    <tr>
+      <td>骨架屏 / 加载态</td><td><span class="tag t-fe">体验</span></td>
+      <td>识别期用表单形状骨架屏、生成期用文案+画廊形状骨架屏，配圆点加载条与<b>已用秒表</b>；识别 &gt;20s 追加安抚文案
+        <span class="why">此前 120s 的识别只有一行「正在识别产品…」，用户无法区分「在跑」和「卡死」。骨架屏撤除登记进 <code>entry.cleanup</code>——否则重置会话时 <code>stopAllStreams</code> 会留下孤儿骨架屏（第二个新测试抓到的真 bug）</span></td>
+    </tr>
+  </table>
+</div>
+
+<div class="note">
+  <b>仍未处理（下一批建议）</b><br/>
+  · <b>业务侧</b>：阿里云 DashScope 账号欠费（Arrearage）会导致实时出图 400 → 降级渐变背景，需充值<br/>
+  · 任务 #36-#41 六项 pending：扩展状态与提示词模板、拆分卖点提炼/广告策划/提示词生成节点、质检 Agent 升级四维、二次优化回环路由、同步 Mock 与文档
+</div>
+
+<footer>
+  修复批次顺序：并发正确性 → 安全 → 性能/健壮 → 前端 → 架构（LangGraph 权威合并 / 前端拆模块）。每批完成即跑全量回归，确认无交叉破坏后再进入下一批。
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,9 @@
+你是一名专业的多语言本地化翻译专家。请将以下文案翻译为 $target_language，注意本地化而非直译，保留广告的语气与感染力。
+
+原文（$source_language）：
+$text
+
+请严格输出如下 JSON（只输出 JSON）：
+{
+  "translated": "翻译后的文案"
+}

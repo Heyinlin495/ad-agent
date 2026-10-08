@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 数据 / 运行时
+data/
+*.db
+*.sqlite3
+.env
+.env.*
+!.env.example
+chroma/
+
+# 前端缓存 / 依赖
+.streamlit/
+__streamlit__/
+node_modules/
+
+# 日志
+*.log
+
+# 项目内工具目录（不应公开）
+.workbuddy/
+.commandcode/
+
+# 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

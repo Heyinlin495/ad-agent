@@ -1,0 +1,16 @@
+{
+  "name": "adagent-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AdAgent 前端（零构建原生 ESM）。package.json 只服务于本地开发工具链，浏览器不读取它。",
+  "scripts": {
+    "check": "node tools/check.mjs",
+    "stamp": "node tools/stamp.mjs",
+    "test": "node tools/dom-test.mjs",
+    "verify": "node tools/stamp.mjs && node tools/check.mjs && node tools/dom-test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}

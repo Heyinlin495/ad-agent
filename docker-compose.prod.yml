@@ -1,0 +1,50 @@
+# 生产环境覆盖层：与 docker-compose.yml 叠加使用。
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#       --profile prod up -d
+#
+# 作用：
+#   - backend 由「源码挂载 + --reload」切为「打包镜像 + 无 reload」，
+#     生产跑的是镜像内代码（不再是热重载的挂载源码）。
+#   - 通过 --profile prod 一并拉起 postgres（替代 SQLite）与 minio（对象存储）。
+#
+# 说明：postgres / minio 的基础 profile 已在 docker-compose.yml 定义为 `prod`，
+# 这里不再重复声明 profiles，只需补充生产运行所需的 restart 策略。
+# backend 对它们的依赖只需 redis（postgres/minio 由 profile 一并启动）；
+# 服务启动后由应用配置（DATABASE_URL / STORAGE_TYPE）决定使用与否。
+services:
+  backend:
+    # 覆盖开发命令：关闭 --reload，跟随内置 CMD（镜像内即最终产物）
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # 不再挂载源码：保证容器内代码与镜像一致
+    volumes: []
+    restart: unless-stopped
+    # 生产依赖：切换数据库与对象存储；USE_REDIS 等按 .env / 显式环境变量生效
+    environment:
+      - ENVIRONMENT=production
+      - STORAGE_TYPE=minio
+      - S3_ENDPOINT=http://minio:9000
+      - S3_BUCKET=ad-agent
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - DATABASE_URL=postgresql+psycopg2://adagent:adagent@postgres:5432/ad_agent
+    depends_on:
+      - redis
+      - postgres
+      - minio
+    networks: [default]
+
+  web:
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  redis:
+    restart: unless-stopped
+
+  postgres:
+    restart: unless-stopped
+
+  minio:
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
