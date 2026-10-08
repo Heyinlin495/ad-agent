@@ -23,11 +23,8 @@ services:
         required: false
     environment:
       - ENVIRONMENT=production
-      - STORAGE_TYPE=minio
-      - S3_ENDPOINT=http://minio:9000
-      - S3_BUCKET=ad-agent
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
+      # 对象存储走真实阿里云 OSS（凭据来自 .docker.env/.env 的 OSS_*，不入库）
+      - STORAGE_TYPE=oss
       - DATABASE_URL=postgresql+psycopg2://adagent:adagent@postgres:5432/ad_agent
       - STORAGE_DIR=/data/storage
       - ASSETS_DIR=/app/assets
@@ -39,7 +36,6 @@ services:
     depends_on:
       - redis
       - postgres
-      - minio
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4); sys.exit(0)"]
       interval: 30s
@@ -75,19 +71,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  minio:
-    image: minio/minio:latest
-    container_name: ad-agent-minio
-    restart: unless-stopped
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    command: server /data --console-address ":9001"
-    volumes:
-      - minio_data:/data
-
 volumes:
   ad_data:
   redis_data:
   postgres_data:
-  minio_data:
