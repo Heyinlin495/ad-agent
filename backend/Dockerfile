@@ -13,7 +13,8 @@
 # ============================================================
 
 # ---------- Stage 1: builder ----------
-FROM python:3.13-slim AS builder
+# 用 3.12：项目依赖按 Python 3.12 锁定（rembg==2.0.59 等无 3.13 wheel）
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -35,7 +36,7 @@ RUN echo "---> pip 安装 [$BUILD_DEPS] 依赖" \
      fi
 
 # ---------- Stage 2: 运行时（精简、非 root）----------
-FROM python:3.13-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
