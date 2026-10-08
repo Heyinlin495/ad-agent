@@ -142,33 +142,69 @@ jobs:
             echo '====== 部署完成: docker compose ps ======'
             S docker compose -f docker-compose.deploy.yml ps
 
-            # ---- 宿主机 nginx：heyinlin.asia 反代（TLS 终结层）----
-            echo '====== 配置宿主机 nginx: heyinlin.asia ======'
-            NGINX_CONF_SRC="$APP_DIR/deploy/nginx/heyinlin.asia.conf"
-            # 兼容两种主流布局：conf.d 或 sites-available+sites-enabled
+            # ---- 宿主机 nginx：agent.heyinlin.asia 反代（TLS 终结层）----
+            # 用独立子域，避开被旧 Streamlit 项目占用的 heyinlin.asia / www，
+            # 不触碰旧 nginx 的任何监听块。
+            DOMAIN="agent.heyinlin.asia"
+            NGINX_CONF_SRC="$APP_DIR/deploy/nginx/${DOMAIN}.conf"
+            NGINX_MAIN=""
+            echo "====== 配置宿主机 nginx: ${DOMAIN} ======"
+            # 1) 优先探测常见布局；探测失败时尝试找到实际 nginx（编译版 /usr/local 等）
             if [ -d /etc/nginx/conf.d ]; then
-              S cp "$NGINX_CONF_SRC" /etc/nginx/conf.d/heyinlin.asia.conf
+              S cp "$NGINX_CONF_SRC" "/etc/nginx/conf.d/${DOMAIN}.conf"
               NGINX_MAIN=/etc/nginx/nginx.conf
             elif [ -d /etc/nginx/sites-available ]; then
-              S cp "$NGINX_CONF_SRC" /etc/nginx/sites-available/heyinlin.asia.conf
-              S ln -sf /etc/nginx/sites-available/heyinlin.asia.conf /etc/nginx/sites-enabled/heyinlin.asia.conf
+              S cp "$NGINX_CONF_SRC" "/etc/nginx/sites-available/${DOMAIN}.conf"
+              S ln -sf "/etc/nginx/sites-available/${DOMAIN}.conf" "/etc/nginx/sites-enabled/${DOMAIN}.conf"
               NGINX_MAIN=/etc/nginx/nginx.conf
             else
-              echo '!! 未找到 nginx 目录，跳过宿主机 nginx 配置'; NGINX_MAIN=""
+              # 非标准安装：用 nginx 二进制本身的 -t 才算数，别只看目录
+              echo '!! 未在 /etc/nginx 找到布局；尝试定位实际 nginx 二进制与 conf...'
+              # 找 nginx bin（PATH 或常见编译路径）
+              NGX_BIN=""
+              for bin in "$(command -v nginx 2>/dev/null)" /usr/local/nginx/sbin/nginx /usr/sbin/nginx; do
+                if [ -n "$bin" ] && [ -x "$bin" ]; then NGX_BIN="$bin"; break; fi
+              done
+              if [ -n "$NGX_BIN" ]; then
+                # 尝试并入 conf.d（多数自定义安装也有 conf.d）
+                NGX_ROOT="$(S "$NGX_BIN" -V 2>&1 | tr ' ' '\n' | sed -n 's/.*--conf-path=\([^ ]*\).*/\1/p' | head -1)"
+                NGX_PREFIX="${NGX_ROOT%/conf/nginx.conf}"
+                if command -v "$NGX_ROOT" >/dev/null 2>&1 || [ -f "$NGX_ROOT" ]; then
+                  NGX_CONF_DIR="$(dirname "$NGX_ROOT")/conf.d"
+                else
+                  # 兜底常见编译路径
+                  NGX_CONF_DIR="${NGX_BIN%/sbin/nginx}/conf/conf.d"
+                fi
+                if [ -d "$NGX_CONF_DIR" ]; then
+                  S cp "$NGX_CONF_SRC" "$NGX_CONF_DIR/${DOMAIN}.conf"
+                  NGINX_MAIN="$NGX_ROOT"
+                  echo "== 已装入实际 nginx conf.d: $NGX_CONF_DIR =="
+                else
+                  echo "!! nginx 二进制存在但未找到 conf.d（$NGX_BIN），以下为人工接入指引："
+                fi
+              else
+                echo "!! 未找到 nginx 二进制，跳过宿主机 nginx 配置"
+              fi
             fi
             # ACME 校验目录（certbot webroot）
             S mkdir -p /var/www/certbot/.well-known/acme-challenge
             # 证书存在才做 nginx -t + reload；证书未签发时提醒跑 certbot，不阻塞应用部署
-            if [ -n "$NGINX_MAIN" ] && [ -f /etc/letsencrypt/live/heyinlin.asia/fullchain.pem ]; then
-              if S nginx -t; then
-                S systemctl reload nginx 2>/dev/null || S nginx -s reload
-                echo '== 宿主机 nginx 已校验并重载（heyinlin.asia）=='
+            if [ -n "$NGINX_MAIN" ] && [ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]; then
+              # NGX_BIN 可能未在标准分支赋值，这里兜底再探测一次
+              if [ -z "$NGX_BIN" ]; then
+                for bin in "$(command -v nginx 2>/dev/null)" /usr/local/nginx/sbin/nginx /usr/sbin/nginx; do
+                  if [ -n "$bin" ] && [ -x "$bin" ]; then NGX_BIN="$bin"; break; fi
+                done
+              fi
+              if [ -n "$NGX_BIN" ] && S "$NGX_BIN" -t >/dev/null 2>&1; then
+                S systemctl reload nginx 2>/dev/null || S "$NGX_BIN" -s reload 2>/dev/null || echo '!! reload 需在服务器手动执行'
+                echo "== 宿主机 nginx 已校验并重载（${DOMAIN}）=="
               else
-                echo '!! nginx -t 失败，请人工检查 /etc/nginx/conf.d/heyinlin.asia.conf'
+                echo "!! nginx -t 失败或无 nginx 二进制，请人工检查 ${DOMAIN}.conf"
               fi
             elif [ -n "$NGINX_MAIN" ]; then
-              echo '!! 尚未签发 Let.s Encrypt 证书，未重载 nginx。'
-              echo '   首次需在服务器执行（域名已解析到本机 + 80 可达时）：'
-              echo "   certbot certonly --webroot -w /var/www/certbot -d heyinlin.asia -d www.heyinlin.asia --agree-tos -m 你的邮箱"
-              echo '   签发成功后重跑本 job 或手动: sudo nginx -t && sudo systemctl reload nginx'
+              echo "!! 尚未签发 ${DOMAIN} 证书，未重载 nginx。"
+              echo '   首次需在服务器执行（域名已解析到本机 + 80 可达时，且 80 被旧项目占用时先在其配置放行 ACME）：'
+              echo "   certbot certonly --webroot -w /var/www/certbot -d ${DOMAIN} --agree-tos -m <你的邮箱>"
+              echo "   签发成功后: sudo nginx -t && sudo systemctl reload nginx"
             fi
