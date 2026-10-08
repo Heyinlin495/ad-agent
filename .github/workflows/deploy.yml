@@ -129,6 +129,13 @@ jobs:
             for c in ad-agent-backend ad-agent-web ad-agent-redis ad-agent-postgres; do
               S docker rm -f "$c" >/dev/null 2>&1 || true
             done
+            # 释放磁盘：历史 unsed 镜像/构建缓存/停止容器都清掉（旧版 full 后端镜像累计几个 GB），
+            # 防止下次拉取 backend 时 "no space left on device"
+            S docker system prune -af >/dev/null 2>&1 || true
+            S docker builder prune -af >/dev/null 2>&1 || true
+            S docker container prune -f >/dev/null 2>&1 || true
+            echo '== 磁盘占用（部署前）=='
+            S df -h / /data 2>/dev/null | tail -n +1 || true
             S docker compose -f docker-compose.deploy.yml pull
             S docker compose -f docker-compose.deploy.yml up -d --remove-orphans
             S docker image prune -f >/dev/null 2>&1 || true
