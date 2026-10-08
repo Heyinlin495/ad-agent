@@ -123,6 +123,12 @@ jobs:
               echo "$DEPLOY_ENV_BASE64" | base64 -d | S tee "$APP_DIR/.docker.env" >/dev/null
             fi
             cd "$APP_DIR"
+            # 清理可能占用 8000/8502 端口的残留容器，防止 "port is already allocated"
+            # （先 down 移除本项目 compose 管理的容器；再按名强删，兼容历史不同 project 的遗留）
+            S docker compose -f docker-compose.deploy.yml down >/dev/null 2>&1 || true
+            for c in ad-agent-backend ad-agent-web ad-agent-redis ad-agent-postgres; do
+              S docker rm -f "$c" >/dev/null 2>&1 || true
+            done
             S docker compose -f docker-compose.deploy.yml pull
             S docker compose -f docker-compose.deploy.yml up -d --remove-orphans
             S docker image prune -f >/dev/null 2>&1 || true
