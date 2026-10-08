@@ -1,0 +1,15 @@
+# ---- 构建/测试工具（静态站不需要进镜像）----
+tools/
+package.json
+package-lock.json
+
+# ---- 版本控制 / 编辑器 / 缓存 ----
+.git/
+.gitignore
+.dockerignore
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+node_modules/

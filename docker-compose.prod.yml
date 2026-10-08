@@ -14,6 +14,11 @@
 # 服务启动后由应用配置（DATABASE_URL / STORAGE_TYPE）决定使用与否。
 services:
   backend:
+    # 生产需要完整依赖（RAG 向量/CrossEncoder/rembg 抠图/MinIO 对象存储），
+    # 覆盖 dev 的 BUILD_DEPS=core，构建 full 镜像
+    build:
+      args:
+        BUILD_DEPS: full
     # 覆盖开发命令：关闭 --reload，跟随内置 CMD（镜像内即最终产物）
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     # 不再挂载源码：保证容器内代码与镜像一致

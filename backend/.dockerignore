@@ -1,0 +1,28 @@
+# ---- Python 缓存 / 虚拟环境 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+
+# ---- 运行时数据（绝不进镜像）----
+data/
+*.db
+*.sqlite3
+chroma/
+*.log
+
+# ---- 测试与本地脚本（构建不需要）----
+tests/
+pytest.ini
+
+# ---- 版本控制 / 编辑器 ----
+.git/
+.gitignore
+.dockerignore
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
