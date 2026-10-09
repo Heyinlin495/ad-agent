@@ -8,6 +8,8 @@ pydantic-settings==2.7.1
 # ---- Database / migration ----
 sqlalchemy==2.0.36
 alembic==1.14.0
+# Postgres 驱动：生产 DATABASE_URL 用 postgresql+psycopg2://...，缺此驱动 backend 连接 postgres 即 ModuleNotFoundError 崩
+psycopg2-binary==2.9.10
 
 # ---- Cache / queue ----
 redis==5.2.1

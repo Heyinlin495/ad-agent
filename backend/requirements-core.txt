@@ -6,6 +6,8 @@ pydantic==2.10.4
 pydantic-settings==2.7.1
 sqlalchemy==2.0.36
 alembic==1.14.0
+# Postgres 驱动：生产 DATABASE_URL 用 postgresql+psycopg2://...，缺此驱动 backend 连 postgres 即崩（体积小，core 也带上避免再踩）
+psycopg2-binary==2.9.10
 redis==5.2.1
 
 # AI orchestration (Mock mode does not call real models)
