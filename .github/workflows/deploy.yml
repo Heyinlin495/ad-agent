@@ -122,6 +122,19 @@ jobs:
             if [ -n "$DEPLOY_ENV_BASE64" ]; then
               echo "$DEPLOY_ENV_BASE64" | base64 -d | S tee "$APP_DIR/.docker.env" >/dev/null
             fi
+            # —— .docker.env 对象存储配置体检（值仅打长度/缺失，不泄露密钥）——
+            # 目的：定位生产 backend 报 "OSS 配置不完整→降级本地" 是否因服务器 .docker.env 缺 OSS 键。
+            echo '==== [体检] 服务器 .docker.env 对象存储配置 ===='
+            if [ -f "$APP_DIR/.docker.env" ]; then
+              echo "  文件存在，$(wc -l < "$APP_DIR/.docker.env" | tr -d ' ') 行"
+              for k in STORAGE_TYPE OSS_ENDPOINT OSS_BUCKET OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET LLM_API_KEY DASHSCOPE_API_KEY; do
+                v=$(grep -E "^$k=" "$APP_DIR/.docker.env" | head -1 | cut -d= -f2- | tr -d '\r')
+                n=${#v}
+                if [ "$n" -gt 0 ]; then echo "  $k = 已设置($n 字符)"; else echo "  $k = ***缺失/为空***"; fi
+              done
+            else
+              echo '  !! .docker.env 文件不存在（部署未写成功或 secret 为空）'
+            fi
             cd "$APP_DIR"
             # 清理可能占用 8000/8502 端口的残留容器，防止 "port is already allocated"
             # （先 down 移除本项目 compose 管理的容器；再按名强删，兼容历史不同 project 的遗留）
