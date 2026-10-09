@@ -191,69 +191,81 @@ jobs:
               S docker top ad-agent-backend 2>&1 | head -20 || true
             ) || true
 
-            # ---- 宿主机 nginx：agent.heyinlin.asia 反代（TLS 终结层）----
-            # 用独立子域，避开被旧 Streamlit 项目占用的 heyinlin.asia / www，
-            # 不触碰旧 nginx 的任何监听块。
+            # ---- 宿主机反向代理：agent.heyinlin.asia（TLS 终结层）----
+            # 实况：本机对外 80/443 由 **Caddy** 提供（HTTP 响应头 Server: Caddy），
+            # 不是 nginx。旧 Streamlit 项目与根域 heyinlin.asia/www 同样走这个 Caddy。
+            # 因此本段只做 Caddy 侧“诊断 + 幂等接入子域”，绝不改写根域既有站点块。
             DOMAIN="agent.heyinlin.asia"
-            NGINX_CONF_SRC="$APP_DIR/deploy/nginx/${DOMAIN}.conf"
-            NGINX_MAIN=""
-            echo "====== 配置宿主机 nginx: ${DOMAIN} ======"
-            # 1) 优先探测常见布局；探测失败时尝试找到实际 nginx（编译版 /usr/local 等）
-            if [ -d /etc/nginx/conf.d ]; then
-              S cp "$NGINX_CONF_SRC" "/etc/nginx/conf.d/${DOMAIN}.conf"
-              NGINX_MAIN=/etc/nginx/nginx.conf
-            elif [ -d /etc/nginx/sites-available ]; then
-              S cp "$NGINX_CONF_SRC" "/etc/nginx/sites-available/${DOMAIN}.conf"
-              S ln -sf "/etc/nginx/sites-available/${DOMAIN}.conf" "/etc/nginx/sites-enabled/${DOMAIN}.conf"
-              NGINX_MAIN=/etc/nginx/nginx.conf
+            UPSTREAM="127.0.0.1:8502"     # web 容器发布的宿主端口
+            echo "====== 宿主机反代诊断（Caddy / nginx）: ${DOMAIN} ======"
+            # 1) 探测 Caddy 形态：二进制 / systemd / docker 容器
+            CADDY_BIN=""
+            for bin in "$(command -v caddy 2>/dev/null)" /usr/bin/caddy /usr/local/bin/caddy; do
+              if [ -n "$bin" ] && [ -x "$bin" ]; then CADDY_BIN="$bin"; break; fi
+            done
+            CADDY_SVC=""
+            if S systemctl list-units --type=service --all 2>/dev/null | grep -qE '^[[:space:]]*caddy\.service'; then CADDY_SVC=caddy; fi
+            CADDY_CTR=$(S docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | grep -i caddy | head -1 | awk '{print $1}')
+            echo "  caddy 二进制: ${CADDY_BIN:-未找到}"
+            echo "  caddy systemd: ${CADDY_SVC:-无}"
+            echo "  caddy 容器: ${CADDY_CTR:-无}"
+            # 2) 现有 Caddyfile（容器形态则读容器内 /etc/caddy/Caddyfile）
+            echo '  --- 现有 Caddy 配置（前 120 行，用于判断如何幂等追加）---'
+            if [ -f /etc/caddy/Caddyfile ]; then
+              S sed -n '1,120p' /etc/caddy/Caddyfile 2>&1 || true
+            elif [ -n "$CADDY_CTR" ]; then
+              S docker exec "$CADDY_CTR" sh -c 'sed -n "1,120p" /etc/caddy/Caddyfile' 2>&1 || true
             else
-              # 非标准安装：用 nginx 二进制本身的 -t 才算数，别只看目录
-              echo '!! 未在 /etc/nginx 找到布局；尝试定位实际 nginx 二进制与 conf...'
-              # 找 nginx bin（PATH 或常见编译路径）
-              NGX_BIN=""
-              for bin in "$(command -v nginx 2>/dev/null)" /usr/local/nginx/sbin/nginx /usr/sbin/nginx; do
-                if [ -n "$bin" ] && [ -x "$bin" ]; then NGX_BIN="$bin"; break; fi
-              done
-              if [ -n "$NGX_BIN" ]; then
-                # 尝试并入 conf.d（多数自定义安装也有 conf.d）
-                NGX_ROOT="$(S "$NGX_BIN" -V 2>&1 | tr ' ' '\n' | sed -n 's/.*--conf-path=\([^ ]*\).*/\1/p' | head -1)"
-                NGX_PREFIX="${NGX_ROOT%/conf/nginx.conf}"
-                if command -v "$NGX_ROOT" >/dev/null 2>&1 || [ -f "$NGX_ROOT" ]; then
-                  NGX_CONF_DIR="$(dirname "$NGX_ROOT")/conf.d"
-                else
-                  # 兜底常见编译路径
-                  NGX_CONF_DIR="${NGX_BIN%/sbin/nginx}/conf/conf.d"
-                fi
-                if [ -d "$NGX_CONF_DIR" ]; then
-                  S cp "$NGX_CONF_SRC" "$NGX_CONF_DIR/${DOMAIN}.conf"
-                  NGINX_MAIN="$NGX_ROOT"
-                  echo "== 已装入实际 nginx conf.d: $NGX_CONF_DIR =="
-                else
-                  echo "!! nginx 二进制存在但未找到 conf.d（$NGX_BIN），以下为人工接入指引："
-                fi
-              else
-                echo "!! 未找到 nginx 二进制，跳过宿主机 nginx 配置"
-              fi
+              echo '  !! 未找到 /etc/caddy/Caddyfile'
             fi
-            # ACME 校验目录（certbot webroot）
-            S mkdir -p /var/www/certbot/.well-known/acme-challenge
-            # 证书存在才做 nginx -t + reload；证书未签发时提醒跑 certbot，不阻塞应用部署
-            if [ -n "$NGINX_MAIN" ] && [ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]; then
-              # NGX_BIN 可能未在标准分支赋值，这里兜底再探测一次
-              if [ -z "$NGX_BIN" ]; then
-                for bin in "$(command -v nginx 2>/dev/null)" /usr/local/nginx/sbin/nginx /usr/sbin/nginx; do
-                  if [ -n "$bin" ] && [ -x "$bin" ]; then NGX_BIN="$bin"; break; fi
-                done
+            # 3) 幂等接入子域：优先写 drop-in 片段（Caddyfile 已 import conf.d 时最稳），
+            #    否则只打印人工指引——不擅自改写既有 Caddyfile，避免影响根域旧项目。
+            CADDY_SNIPPET="/etc/caddy/conf.d/${DOMAIN}.caddy"
+            # 用 printf 构造站点片段（避免 YAML 块标量里出现顶格行破坏缩进）
+            mk_snippet() { printf '%s {\n\tencode gzip\n\treverse_proxy %s\n}\n' "$DOMAIN" "$UPSTREAM"; }
+            echo "  --- 目标站点片段（将写入 ${CADDY_SNIPPET}）---"
+            mk_snippet
+            if [ -f /etc/caddy/Caddyfile ] && S grep -qE '^[[:space:]]*import[[:space:]]+/etc/caddy/conf\.d/' /etc/caddy/Caddyfile; then
+              S mkdir -p /etc/caddy/conf.d
+              mk_snippet | S tee "$CADDY_SNIPPET" >/dev/null
+              echo "== 已写入 ${CADDY_SNIPPET}（Caddyfile 已 import conf.d）=="
+              if [ -n "$CADDY_BIN" ]; then
+                if S "$CADDY_BIN" validate --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
+                  S systemctl reload caddy 2>/dev/null || S "$CADDY_BIN" reload --config /etc/caddy/Caddyfile 2>/dev/null || echo '!! caddy reload 需人工执行'
+                  echo "== caddy 已校验并重载 =="
+                else
+                  echo '!! caddy validate 失败，未重载（请人工检查）'
+                fi
               fi
-              if [ -n "$NGX_BIN" ] && S "$NGX_BIN" -t >/dev/null 2>&1; then
-                S systemctl reload nginx 2>/dev/null || S "$NGX_BIN" -s reload 2>/dev/null || echo '!! reload 需在服务器手动执行'
-                echo "== 宿主机 nginx 已校验并重载（${DOMAIN}）=="
-              else
-                echo "!! nginx -t 失败或无 nginx 二进制，请人工检查 ${DOMAIN}.conf"
-              fi
-            elif [ -n "$NGINX_MAIN" ]; then
-              echo "!! 尚未签发 ${DOMAIN} 证书，未重载 nginx。"
-              echo '   首次需在服务器执行（域名已解析到本机 + 80 可达时，且 80 被旧项目占用时先在其配置放行 ACME）：'
-              echo "   certbot certonly --webroot -w /var/www/certbot -d ${DOMAIN} --agree-tos -m <你的邮箱>"
-              echo "   签发成功后: sudo nginx -t && sudo systemctl reload nginx"
+            elif [ -n "$CADDY_CTR" ]; then
+              echo "!! Caddy 以容器运行，配置在容器内。请把上面的站点片段加入其 Caddyfile 后重启容器。"
+            else
+              echo "!! 未能自动判定 Caddy 接入方式（无 /etc/caddy/Caddyfile 或无 import conf.d）。"
+              echo "   请在服务器把上面的 ${DOMAIN} 站点片段加入 Caddyfile，再 caddy reload / 重启服务。"
+              echo "   Caddy 自动 ACME 签发证书，无需 certbot；需 80 端口对 Let's Encrypt 可达。"
             fi
+            # ---- TLS/ACME 现状诊断（非致命，纯观测）----
+            # 目标：解释为何 https://agent.heyinlin.asia 握手失败（internal error）
+            # 典型原因：Caddy 有站点块但证书未签发成功（ACME 被拦 / 域名未解析到本机 / 80 不可达）。
+            (
+              echo '====== TLS/ACME 诊断 ======'
+              echo "--- 本机公网 IP 与 ${DOMAIN} 解析对照 ---"
+              PUBIP=$(curl -sS --max-time 6 https://api.ipify.org 2>/dev/null || echo '?')
+              echo "  本机公网 IP: ${PUBIP}"
+              echo "  ${DOMAIN} 解析: $(getent hosts ${DOMAIN} 2>/dev/null | awk '{print $1}' | paste -sd, - || echo '解析失败')"
+              echo '--- 443 本地握手探测（--resolve 指向本机，排除 DNS 干扰）---'
+              curl -sk -o /dev/null -w '  https://%{http_code}\n' --max-time 6 --resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/" 2>&1 || echo '  443 握手失败'
+              echo '--- ACME HTTP-01 路径可达性（Caddy 应返回 challenge 内容；308 则说明被全局重定向拦截）---'
+              curl -sS -o /dev/null -w '  http://${DOMAIN}/.well-known/acme-challenge/probe -> HTTP %{http_code}\n' --max-time 6 -H "Host: ${DOMAIN}" http://127.0.0.1/.well-known/acme-challenge/probe 2>&1 || echo '  ACME 路径不可达'
+              echo '--- Caddy 证书存储（看是否已有 ${DOMAIN} 的证书）---'
+              if [ -n "$CADDY_BIN" ]; then
+                S ls -la /var/lib/caddy/.local/share/caddy/certificates/ 2>/dev/null | head -20 || echo '  未找到 caddy 证书目录（容器形态可能在卷内）'
+              fi
+              if [ -n "$CADDY_CTR" ]; then
+                echo "--- 容器内 caddy 日志（最近 40 行，含 ACME 报错）---"
+                S docker logs --tail 40 "$CADDY_CTR" 2>&1 || true
+              elif [ -n "$CADDY_SVC" ]; then
+                echo "--- caddy systemd 日志（最近 40 行，含 ACME 报错）---"
+                S journalctl -u caddy --no-pager -n 40 2>&1 || true
+              fi
+            ) || true
