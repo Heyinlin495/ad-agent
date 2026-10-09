@@ -105,6 +105,10 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           password: ${{ secrets.DEPLOY_PASSWORD }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
+          # 关键：必须用 envs 显式声明要注入远程 shell 的变量名。
+          # 仅顶层 env: 只作用于 runner 本地，不会传到远程 SSH 会话——曾因此
+          # 远程 $DEPLOY_ENV_BASE64 为空，.docker.env 从未写入，导致生产缺 OSS 配置。
+          envs: DEPLOY_ENV_BASE64
           command_timeout: 60m
           script: |
             set -e
