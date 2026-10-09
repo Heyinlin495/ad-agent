@@ -61,8 +61,11 @@ COPY . /app
 WORKDIR /app
 
 # 创建非 root 运行用户，并给可写目录授权
-RUN groupadd -r app && useradd -r -g app -d /app app \
-    && mkdir -p /app/data /app/assets && chown -R app:app /app
+# 固定 uid/gid=1000：便于 compose 挂载的 named volume（/data）在部署时用 chown 1000:1000 修正属主，
+# 否则卷默认 root 属主，非 root 的 app 用户无法写 /data/storage（会导致 storage 初始化 PermissionError）
+RUN groupadd -r -g 1000 app && useradd -r -u 1000 -g 1000 -d /app app \
+    && mkdir -p /app/data /app/assets /data/storage \
+    && chown -R app:app /app /data
 
 # 非 root 运行（安全）：镜像内以 app 用户启动；
 # read_only 根文件系统 / 弱化 capabilities / no-new-privileges 等在
