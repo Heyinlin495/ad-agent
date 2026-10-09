@@ -80,7 +80,66 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  # ------------------------------------------------------------
+  # Caddy 子域接入（one-shot，幂等，失败自动回滚）
+  #
+  # 背景：服务器 80/443 由宿主 Caddy 提供；根域 heyinlin.asia 走 8501，
+  #   www 走 8888，均已有证书。但 agent.heyinlin.asia 未在 Caddyfile 中
+  #   声明站点 → 不为该 SNI 申请证书 → https 握手 TLSV1_ALERT_INTERNAL_ERROR。
+  #
+  # 本容器只做四件事（全部在宿主 /etc/caddy 上，挂载进来看得见）：
+  #   1. 若 Caddyfile 已含该域名 → 直接退出（幂等）
+  #   2. 备份 Caddyfile 为 .bak-<时间戳>
+  #   3. 末尾追加 agent 站点块（不动既有内容）
+  #   4. caddy validate 通过才 reload；失败则用备份回滚
+  #
+  # 安全：绝不改写既有站点块；validate 是硬门槛；失败自动还原。
+  # 注：network_mode: host 使容器可直连宿主 Caddy admin API (127.0.0.1:2019)。
+  # ------------------------------------------------------------
+  caddy-subdomain:
+    image: caddy:2-alpine
+    container_name: ad-agent-caddy-subdomain
+    restart: "no"
+    network_mode: host
+    volumes:
+      - /etc/caddy:/etc/caddy
+      - caddy_fix_done:/state
+    environment:
+      - DOMAIN=agent.heyinlin.asia
+      - UPSTREAM=127.0.0.1:8502
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -u
+        D="$${DOMAIN}"; U="$${UPSTREAM}"; F=/etc/caddy/Caddyfile
+        echo "== [caddy-subdomain] domain=$$D upstream=$$U =="
+        if [ ! -f "$$F" ]; then echo "!! $$F 不存在，跳过（请人工确认 Caddy 配置位置）"; exit 0; fi
+        if grep -qE "(^|[[:space:]])$$D([[:space:]]|\{|,)" "$$F"; then
+          echo "== Caddyfile 已包含 $$D，无需改动（幂等退出）=="; exit 0
+        fi
+        TS=$$(date +%Y%m%d-%H%M%S)
+        cp -a "$$F" "$$F.bak-$$TS" && echo "== 已备份: $$F.bak-$$TS =="
+        {
+          printf '\n# ---- ad-agent: %s (auto) ----\n' "$$TS"
+          printf '%s {\n\tencode gzip\n\treverse_proxy %s\n}\n' "$$D" "$$U"
+        } >> "$$F"
+        echo "== 已追加 $$D 站点块 =="
+        if caddy validate --config "$$F" >/dev/null 2>&1; then
+          echo "== validate 通过 =="
+          if caddy reload --config "$$F" --address 127.0.0.1:2019 2>&1; then
+            echo "== caddy 已 reload（Caddy 将自动向 Let's Encrypt 申请证书）=="
+          else
+            echo "!! reload 失败，尝试 systemctl（容器内通常无权限，属正常）"
+          fi
+        else
+          echo "!! validate 失败，回滚 $$F"
+          cp -a "$$F.bak-$$TS" "$$F" && echo "== 已回滚，未影响线上配置 =="
+          exit 1
+        fi
+        echo "== 完成。证书签发需数十秒；验证: curl -sI https://$$D/ =="
+
 volumes:
   ad_data:
   redis_data:
   postgres_data:
+  caddy_fix_done:
