@@ -153,6 +153,16 @@ jobs:
             S docker container prune -f >/dev/null 2>&1 || true
             echo '== 磁盘占用（部署前）=='
             S df -h / /data 2>/dev/null | tail -n +1 || true
+            # 修正数据卷属主：非 root 的 app 用户(uid=1000)需要可写 /data。
+            # named volume 首次挂载若镜像内 /data 不存在则默认 root 属主，导致 backend
+            # storage 初始化 PermissionError；对已存在的卷用已在本机的 redis:7-alpine 做 chown。
+            echo '== 修正数据卷属主（chown 1000:1000）=='
+            VOL=$(S docker volume ls -q --filter name=ad_data 2>/dev/null | head -1)
+            if [ -n "$VOL" ]; then
+              S docker run --rm -v "$VOL:/data" redis:7-alpine sh -c 'chown -R 1000:1000 /data' 2>&1 | tail -2 || echo '!! chown 卷失败，backend 可能仍无法写 /data'
+            else
+              echo '!! 未找到 ad_data 卷（首次部署会由 compose 创建）'
+            fi
             S docker compose -f docker-compose.deploy.yml pull
             S docker compose -f docker-compose.deploy.yml up -d --remove-orphans
             S docker image prune -f >/dev/null 2>&1 || true
