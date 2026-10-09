@@ -1,7 +1,7 @@
 /* ============================================================
    模态与图片预览：替代原生 confirm/alert，含焦点管理
    ============================================================ */
-import { $, trapFocus } from "./dom.js?v=99b6e455";
+import { $, trapFocus } from "./dom.js?v=2c2bf4b0";
 
 let modalLastFocus = null;
 

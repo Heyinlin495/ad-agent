@@ -1,5 +1,5 @@
-import { DEFAULT_MAX_FILE_MB } from "../constants.js?v=99b6e455";
-import { TaskController } from "./task-controller.js?v=99b6e455";
+import { DEFAULT_MAX_FILE_MB } from "../constants.js?v=2c2bf4b0";
+import { TaskController } from "./task-controller.js?v=2c2bf4b0";
 
 /**
  * 带 LRU 上限的 Map。超过 maxEntries 时淘汰「最近最少使用」的条目。

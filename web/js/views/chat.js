@@ -12,20 +12,20 @@
    绝不使用 document 级 id（同一条会话里卡片会重复出现，重复 id 会让
    后续卡片的事件绑到第一张卡片上）。
    ============================================================ */
-import { $, toast, scrollIntoViewChat } from "../core/dom.js?v=99b6e455";
-import { fetchJson } from "../core/api.js?v=99b6e455";
-import { state } from "../core/state.js?v=99b6e455";
-import { clearAttach, maxFileMb } from "./composer.js?v=99b6e455";
+import { $, toast, scrollIntoViewChat } from "../core/dom.js?v=2c2bf4b0";
+import { fetchJson } from "../core/api.js?v=2c2bf4b0";
+import { state } from "../core/state.js?v=2c2bf4b0";
+import { clearAttach, maxFileMb } from "./composer.js?v=2c2bf4b0";
 
 import {
   addMsg, bubble, addUserMsg, productCardHtml, paramsCardHtml,
   resultHtml, errorCardHtml, guideHtml, paramsInfoHtml,
   installImageFallback, analyzeSkeletonHtml, setLoadingText, startElapsed,
-} from "./chat-render.js?v=99b6e455";
+} from "./chat-render.js?v=2c2bf4b0";
 import {
   renderProgressCard, stopStream, stopAllStreams, bindStreamRenderers,
-} from "./chat-stream.js?v=99b6e455";
-import { installCardActions, bindFlowHandlers } from "./chat-tools.js?v=99b6e455";
+} from "./chat-stream.js?v=2c2bf4b0";
+import { installCardActions, bindFlowHandlers } from "./chat-tools.js?v=2c2bf4b0";
 
 /* ---------- 对外再导出：保持既有 import 点无需改动 ---------- */
 export { addMsg, bubble, renderProgressCard, stopStream, stopAllStreams, installImageFallback };

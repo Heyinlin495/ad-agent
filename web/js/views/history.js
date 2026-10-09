@@ -1,14 +1,14 @@
 /* ============================================================
    历史对话：列表 + 详情回放 + 删除
    ============================================================ */
-import { COUNTRIES } from "../constants.js?v=99b6e455";
-import { request } from "../core/api.js?v=99b6e455";
-import { $, esc, toast } from "../core/dom.js?v=99b6e455";
-import { state } from "../core/state.js?v=99b6e455";
-import { appConfirm } from "../core/modal.js?v=99b6e455";
-import { switchView } from "../shell.js?v=99b6e455";
-import { addMsg, bubble, renderResult, renderError, resetChat } from "./chat.js?v=99b6e455";
-import { resultSkeletonHtml } from "./chat-render.js?v=99b6e455";
+import { COUNTRIES } from "../constants.js?v=2c2bf4b0";
+import { request } from "../core/api.js?v=2c2bf4b0";
+import { $, esc, toast } from "../core/dom.js?v=2c2bf4b0";
+import { state } from "../core/state.js?v=2c2bf4b0";
+import { appConfirm } from "../core/modal.js?v=2c2bf4b0";
+import { switchView } from "../shell.js?v=2c2bf4b0";
+import { addMsg, bubble, renderResult, renderError, resetChat } from "./chat.js?v=2c2bf4b0";
+import { resultSkeletonHtml } from "./chat-render.js?v=2c2bf4b0";
 
 const STATUS_TEXT = {
   success: "完成", failed: "失败", running: "进行中",

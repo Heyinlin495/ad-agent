@@ -1,9 +1,9 @@
 /* ============================================================
    输入区：附件选择 / 非常规格式转换 / 自适应高度
    ============================================================ */
-import { DEFAULT_MAX_FILE_MB, OK_IMAGE_EXTS } from "../constants.js?v=99b6e455";
-import { $, toast } from "../core/dom.js?v=99b6e455";
-import { state } from "../core/state.js?v=99b6e455";
+import { DEFAULT_MAX_FILE_MB, OK_IMAGE_EXTS } from "../constants.js?v=2c2bf4b0";
+import { $, toast } from "../core/dom.js?v=2c2bf4b0";
+import { state } from "../core/state.js?v=2c2bf4b0";
 
 export const maxFileMb = () => state.maxFileMb || DEFAULT_MAX_FILE_MB;
 

@@ -4,11 +4,11 @@
    每个任务持有独立的 EventSource / 轮询定时器，互不干扰。
    渲染部分委托给 chat-render.js，结果落地后的按键交互委托给 chat-tools.js。
    ============================================================ */
-import { $, q, toast, isNearBottom, scrollIntoViewChat } from "../core/dom.js?v=99b6e455";
-import { api, request, postJson } from "../core/api.js?v=99b6e455";
-import { state } from "../core/state.js?v=99b6e455";
-import { hooks } from "../core/wiring.js?v=99b6e455";
-import { addMsg, bubble, progressCardHtml, updateProgress, startElapsed } from "./chat-render.js?v=99b6e455";
+import { $, q, toast, isNearBottom, scrollIntoViewChat } from "../core/dom.js?v=2c2bf4b0";
+import { api, request, postJson } from "../core/api.js?v=2c2bf4b0";
+import { state } from "../core/state.js?v=2c2bf4b0";
+import { hooks } from "../core/wiring.js?v=2c2bf4b0";
+import { addMsg, bubble, progressCardHtml, updateProgress, startElapsed } from "./chat-render.js?v=2c2bf4b0";
 
 /** 终止态集合 */
 const TERMINAL = ["success", "failed", "cancelled"];

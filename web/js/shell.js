@@ -1,9 +1,9 @@
 /* ============================================================
    应用外壳：视图切换 + 侧边栏
    ============================================================ */
-import { $, qa } from "./core/dom.js?v=99b6e455";
-import { loadKbDocs } from "./views/kb.js?v=99b6e455";
-import { loadSettings } from "./views/settings.js?v=99b6e455";
+import { $, qa } from "./core/dom.js?v=2c2bf4b0";
+import { loadKbDocs } from "./views/kb.js?v=2c2bf4b0";
+import { loadSettings } from "./views/settings.js?v=2c2bf4b0";
 
 const SIDEBAR_KEY = "adagent.sidebar.collapsed";
 

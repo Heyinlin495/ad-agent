@@ -1,7 +1,7 @@
 /* ============================================================
    后端 API 访问层：统一超时、统一错误信封解析
    ============================================================ */
-import { getApiBase, setApiBase } from "../config.js?v=99b6e455";
+import { getApiBase, setApiBase } from "../config.js?v=2c2bf4b0";
 
 // 对外统一出口：调用方只需从 core/api.js 取 API 相关能力
 export { getApiBase, setApiBase };
@@ -13,6 +13,14 @@ export const api = (path) => `${getApiBase()}/api/v1${path}`;
 export const fileUrl = (u) => (!u ? "" : u.startsWith("http") ? u : `${getApiBase()}${u}`);
 
 export const DEFAULT_TIMEOUT = 90000;
+
+// 网关层（nginx/Caddy）直接返回的非 JSON 错误页，需要翻译成人话，
+// 否则用户只会看到“请求失败（HTTP 413）”这种无从下手的提示。
+const GATEWAY_HINTS = {
+  413: "图片体积过大，请压缩或换一张更小的图片后重试",
+  502: "后端服务未就绪，请稍后重试",
+  504: "后端响应超时，请稍后重试",
+};
 
 function abortMessage(err, timeout) {
   return err && err.name === "AbortError"
@@ -43,7 +51,11 @@ export async function fetchJson(path, { timeout = DEFAULT_TIMEOUT, ...opts } = {
     /* 非 JSON 响应（网关错误页等） */
   }
   if (!payload || payload.code !== 0) {
-    throw new Error((payload && payload.message) || `请求失败（HTTP ${resp.status}）`);
+    throw new Error(
+      (payload && payload.message) ||
+        GATEWAY_HINTS[resp.status] ||
+        `请求失败（HTTP ${resp.status}）`
+    );
   }
   return payload.data;
 }

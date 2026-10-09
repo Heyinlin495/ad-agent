@@ -1,8 +1,8 @@
 /* ============================================================
    系统设置：后端运行配置（只读）
    ============================================================ */
-import { request } from "../core/api.js?v=99b6e455";
-import { $, esc } from "../core/dom.js?v=99b6e455";
+import { request } from "../core/api.js?v=2c2bf4b0";
+import { $, esc } from "../core/dom.js?v=2c2bf4b0";
 
 export async function loadSettings() {
   const grid = $("settingsGrid");
