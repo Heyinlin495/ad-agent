@@ -209,40 +209,81 @@ jobs:
             echo "  caddy 二进制: ${CADDY_BIN:-未找到}"
             echo "  caddy systemd: ${CADDY_SVC:-无}"
             echo "  caddy 容器: ${CADDY_CTR:-无}"
-            # 2) 现有 Caddyfile（容器形态则读容器内 /etc/caddy/Caddyfile）
-            echo '  --- 现有 Caddy 配置（前 120 行，用于判断如何幂等追加）---'
-            if [ -f /etc/caddy/Caddyfile ]; then
-              S sed -n '1,120p' /etc/caddy/Caddyfile 2>&1 || true
-            elif [ -n "$CADDY_CTR" ]; then
-              S docker exec "$CADDY_CTR" sh -c 'sed -n "1,120p" /etc/caddy/Caddyfile' 2>&1 || true
-            else
-              echo '  !! 未找到 /etc/caddy/Caddyfile'
+            # 2) 定位 Caddy 的真实配置路径（本机 Caddyfile 不在 /etc/caddy/，实测诊断为空）
+            #    依次尝试：systemd 单元 ExecStart 的 --config / -conf、caddy environ、常见路径
+            CADDY_CONF=""
+            if [ -n "$CADDY_SVC" ]; then
+              echo '  --- systemd caddy.service 关键行 ---'
+              S systemctl cat caddy 2>/dev/null | grep -iE 'ExecStart|EnvironmentFile|WorkingDirectory' || true
+              UNIT_EXEC=$(S systemctl cat caddy 2>/dev/null | grep -i '^ExecStart' | head -1)
+              for flag in --config -conf --config= -conf=; do
+                case "$UNIT_EXEC" in
+                  *"$flag"*) CADDY_CONF=$(printf '%s' "$UNIT_EXEC" | sed -n "s/.*$flag[= ]\([^ ]*\).*/\1/p" | head -1);;
+                esac
+              done
             fi
-            # 3) 幂等接入子域：优先写 drop-in 片段（Caddyfile 已 import conf.d 时最稳），
-            #    否则只打印人工指引——不擅自改写既有 Caddyfile，避免影响根域旧项目。
-            CADDY_SNIPPET="/etc/caddy/conf.d/${DOMAIN}.caddy"
-            # 用 printf 构造站点片段（避免 YAML 块标量里出现顶格行破坏缩进）
-            mk_snippet() { printf '%s {\n\tencode gzip\n\treverse_proxy %s\n}\n' "$DOMAIN" "$UPSTREAM"; }
-            echo "  --- 目标站点片段（将写入 ${CADDY_SNIPPET}）---"
-            mk_snippet
-            if [ -f /etc/caddy/Caddyfile ] && S grep -qE '^[[:space:]]*import[[:space:]]+/etc/caddy/conf\.d/' /etc/caddy/Caddyfile; then
-              S mkdir -p /etc/caddy/conf.d
-              mk_snippet | S tee "$CADDY_SNIPPET" >/dev/null
-              echo "== 已写入 ${CADDY_SNIPPET}（Caddyfile 已 import conf.d）=="
+            if [ -z "$CADDY_CONF" ] && [ -n "$CADDY_BIN" ]; then
+              CADDY_CONF=$(S "$CADDY_BIN" environ 2>/dev/null | sed -n 's/^CADDY_CONFIG=//p' | head -1)
+            fi
+            if [ -z "$CADDY_CONF" ]; then
+              for c in /etc/caddy/Caddyfile /usr/local/etc/caddy/Caddyfile /opt/caddy/Caddyfile "$APP_DIR/deploy/caddy/Caddyfile"; do
+                [ -f "$c" ] && { CADDY_CONF="$c"; break; }
+              done
+            fi
+            echo "  caddy 配置路径: ${CADDY_CONF:-未找到}"
+            # 3) 打印现有配置（判断 agent 子域如何定义；是否已 import conf.d）
+            echo '  --- 现有 Caddy 配置（前 160 行）---'
+            if [ -n "$CADDY_CONF" ] && [ -f "$CADDY_CONF" ]; then
+              S sed -n '1,160p' "$CADDY_CONF" 2>&1 || true
+            elif [ -n "$CADDY_CTR" ]; then
+              S docker exec "$CADDY_CTR" sh -c 'cat /etc/caddy/Caddyfile 2>/dev/null | head -160' 2>&1 || true
+            else
+              echo '  !! 未定位到 Caddy 配置；尝试从运行态导出：caddy adapt / 看 admin API'
               if [ -n "$CADDY_BIN" ]; then
-                if S "$CADDY_BIN" validate --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
-                  S systemctl reload caddy 2>/dev/null || S "$CADDY_BIN" reload --config /etc/caddy/Caddyfile 2>/dev/null || echo '!! caddy reload 需人工执行'
+                echo '  --- 运行态配置（admin API /config/，需 admin 开启）---'
+                curl -sS --max-time 5 http://127.0.0.1:2019/config/ 2>/dev/null | head -c 4000 || echo '  admin API 不可达'
+                echo
+              fi
+            fi
+            # 4) 幂等接入：写 drop-in 片段（Caddyfile 已 import conf.d 时最稳）
+            CADDY_SNIPPET="/etc/caddy/conf.d/${DOMAIN}.caddy"
+            mk_snippet() { printf '%s {\n\tencode gzip\n\treverse_proxy %s\n}\n' "$DOMAIN" "$UPSTREAM"; }
+            echo "  --- 目标站点片段 ---"
+            mk_snippet
+            if [ -n "$CADDY_CONF" ] && [ -f "$CADDY_CONF" ] && S grep -qE '^[[:space:]]*import[[:space:]]+.*conf\.d' "$CADDY_CONF"; then
+              SNIP_DIR=$(S sed -n 's/^[[:space:]]*import[[:space:]]\+\([^ ]*conf\.d\).*/\1/p' "$CADDY_CONF" | head -1)
+              [ -n "$SNIP_DIR" ] || SNIP_DIR=/etc/caddy/conf.d
+              S mkdir -p "$SNIP_DIR"
+              mk_snippet | S tee "${SNIP_DIR}/${DOMAIN}.caddy" >/dev/null
+              echo "== 已写入 ${SNIP_DIR}/${DOMAIN}.caddy =="
+              if [ -n "$CADDY_BIN" ]; then
+                if S "$CADDY_BIN" validate --config "$CADDY_CONF" >/dev/null 2>&1; then
+                  S systemctl reload caddy 2>/dev/null || S "$CADDY_BIN" reload --config "$CADDY_CONF" 2>/dev/null || echo '!! caddy reload 需人工执行'
                   echo "== caddy 已校验并重载 =="
                 else
                   echo '!! caddy validate 失败，未重载（请人工检查）'
                 fi
               fi
+            elif [ -n "$CADDY_CONF" ] && [ -f "$CADDY_CONF" ]; then
+              # 没有 import conf.d：若配置里尚未出现该域名，则追加站点块（只追加，不改既有内容）
+              if S grep -qE "(^|[[:space:]])${DOMAIN}([[:space:]]|\{|,)" "$CADDY_CONF"; then
+                echo "!! 配置中已存在 ${DOMAIN} 相关条目，但证书未签发。"
+                echo "   请在服务器检查该条目的 TLS/ACME 是否可用（如为 redir/handle 未含 tls，需改为 reverse_proxy 站点）。"
+              else
+                cp -a "$CADDY_CONF" "${CADDY_CONF}.bak-$(date +%Y%m%d-%H%M%S)" 2>/dev/null || S cp -a "$CADDY_CONF" "${CADDY_CONF}.bak-$(date +%Y%m%d-%H%M%S)"
+                { printf '\n# ---- 由 deploy.yml 追加 %s ----\n' "$(date +%F)"; mk_snippet; } | S tee -a "$CADDY_CONF" >/dev/null
+                echo "== 已追加 ${DOMAIN} 站点块到 ${CADDY_CONF} =="
+                if [ -n "$CADDY_BIN" ] && S "$CADDY_BIN" validate --config "$CADDY_CONF" >/dev/null 2>&1; then
+                  S systemctl reload caddy 2>/dev/null || S "$CADDY_BIN" reload --config "$CADDY_CONF" 2>/dev/null || echo '!! caddy reload 需人工执行'
+                  echo "== caddy 已校验并重载 =="
+                else
+                  echo '!! 追加后 caddy validate 失败，请人工检查（已留 .bak 备份）'
+                fi
+              fi
             elif [ -n "$CADDY_CTR" ]; then
               echo "!! Caddy 以容器运行，配置在容器内。请把上面的站点片段加入其 Caddyfile 后重启容器。"
             else
-              echo "!! 未能自动判定 Caddy 接入方式（无 /etc/caddy/Caddyfile 或无 import conf.d）。"
-              echo "   请在服务器把上面的 ${DOMAIN} 站点片段加入 Caddyfile，再 caddy reload / 重启服务。"
-              echo "   Caddy 自动 ACME 签发证书，无需 certbot；需 80 端口对 Let's Encrypt 可达。"
+              echo "!! 未能自动判定 Caddy 配置路径。请人工把上面的 ${DOMAIN} 站点片段加入 Caddyfile，再 reload。"
             fi
             # ---- TLS/ACME 现状诊断（非致命，纯观测）----
             # 目标：解释为何 https://agent.heyinlin.asia 握手失败（internal error）
