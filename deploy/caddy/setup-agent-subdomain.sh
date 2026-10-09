@@ -25,8 +25,8 @@ set -uo pipefail
 
 DOMAIN="${DOMAIN:-agent.heyinlin.asia}"
 UPSTREAM="${UPSTREAM:-127.0.0.1:8502}"     # web 容器发布的宿主端口
-CADDYFILE="${CADDYFILE:-/etc/caddy/Caddyfile}"
-SNIPPET_DIR="/etc/caddy/conf.d"
+CADDYFILE="${CADDYFILE:-}"                  # 留空则自动探测（见下）
+SNIPPET_DIR=""
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 log()  { printf '\033[1;34m[+]\033[0m %s\n' "$*"; }
@@ -42,11 +42,39 @@ CADDY_CTR="$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | grep -i ca
 
 log "caddy 二进制: ${CADDY_BIN:-未找到}"
 log "caddy 容器:   ${CADDY_CTR:-无}"
-log "Caddyfile:    ${CADDYFILE}"
+
+# ---------- 自动定位 Caddyfile 真实路径 ----------
+# 实测：caddy 在 /usr/local/bin/caddy + systemd，但 /etc/caddy/Caddyfile 不存在。
+if [ -z "$CADDYFILE" ]; then
+  UNIT_EXEC=$(systemctl cat caddy 2>/dev/null | grep -i '^ExecStart' | head -1)
+  for flag in --config -conf; do
+    case "$UNIT_EXEC" in
+      *"$flag"*) CADDYFILE=$(printf '%s' "$UNIT_EXEC" | sed -n "s/.*$flag[= ]\([^ ]*\).*/\1/p" | head -1);;
+    esac
+  done
+  if [ -z "$CADDYFILE" ] && [ -n "$CADDY_BIN" ]; then
+    CADDYFILE=$("$CADDY_BIN" environ 2>/dev/null | sed -n 's/^CADDY_CONFIG=//p' | head -1)
+  fi
+  if [ -z "$CADDYFILE" ]; then
+    for c in /etc/caddy/Caddyfile /usr/local/etc/caddy/Caddyfile /opt/caddy/Caddyfile; do
+      [ -f "$c" ] && { CADDYFILE="$c"; break; }
+    done
+  fi
+fi
+log "Caddyfile:    ${CADDYFILE:-未定位到}"
 
 if [ -z "$CADDY_BIN" ] && [ -z "$CADDY_CTR" ]; then
   err "既没有 caddy 二进制也没有 caddy 容器，无法自动处理。"
   err "请确认 Caddy 的安装方式后手动接入 ${DOMAIN} -> ${UPSTREAM}。"
+  exit 1
+fi
+
+# 定位失败时，尝试从 admin API 导出运行态配置（仅打印，供人工判断）
+if [ -z "$CADDYFILE" ] && [ -n "$CADDY_BIN" ]; then
+  warn "未定位到 Caddyfile，尝试从 admin API 导出运行态配置："
+  curl -sS --max-time 5 http://127.0.0.1:2019/config/ 2>/dev/null | head -c 4000 || echo "  admin API 不可达"
+  echo
+  warn "请据上面配置确认站点定义位置，或用 CADDYFILE=/path/to/Caddyfile 重跑本脚本。"
   exit 1
 fi
 
@@ -79,19 +107,36 @@ SNIPPET_BODY="${DOMAIN} {
 
 # ---------- 3. 写入（优先 drop-in）----------
 USE_SNIPPET=0
-if grep -qE '^[[:space:]]*import[[:space:]]+/etc/caddy/conf\.d/' "$CADDYFILE"; then
+IMPORT_LINE=$(grep -E '^[[:space:]]*import[[:space:]]+.*conf\.d' "$CADDYFILE" | head -1)
+if [ -n "$IMPORT_LINE" ]; then
   USE_SNIPPET=1
+  # 从 import 行解析片段目录（可能是相对路径，相对 Caddyfile 所在目录）
+  SNIP_DIR=$(printf '%s' "$IMPORT_LINE" | sed -n 's/^[[:space:]]*import[[:space:]]\+\([^ ]*conf\.d\).*/\1/p')
+  case "$SNIP_DIR" in
+    /*) : ;;
+    "") SNIP_DIR="/etc/caddy/conf.d" ;;
+    *)  SNIP_DIR="$(dirname "$CADDYFILE")/$SNIP_DIR" ;;
+  esac
+else
+  SNIP_DIR="/etc/caddy/conf.d"
 fi
 
 if [ "$USE_SNIPPET" = "1" ]; then
-  mkdir -p "$SNIPPET_DIR"
-  printf '%s\n' "$SNIPPET_BODY" > "${SNIPPET_DIR}/${DOMAIN}.caddy"
-  log "已写入 drop-in 片段: ${SNIPPET_DIR}/${DOMAIN}.caddy"
+  mkdir -p "$SNIP_DIR"
+  printf '%s\n' "$SNIPPET_BODY" > "${SNIP_DIR}/${DOMAIN}.caddy"
+  log "已写入 drop-in 片段: ${SNIP_DIR}/${DOMAIN}.caddy"
 else
-  if grep -qE "^[[:space:]]*${DOMAIN}[[:space:]]*\{" "$CADDYFILE"; then
-    log "Caddyfile 已存在 ${DOMAIN} 站点块，跳过追加。"
+  if grep -qE "(^|[[:space:]])${DOMAIN}([[:space:]]|\{|,)" "$CADDYFILE"; then
+    warn "Caddyfile 已出现 ${DOMAIN} 相关条目，但证书未签发。"
+    warn "请检查该条目是否含 TLS/反向代理（如仅 redir/handle 不会申请证书）。"
+    warn "可参考下面这段，替换/补齐为独立站点块："
+    echo
+    printf '  %s\n' "$SNIPPET_BODY"
+    echo
+    warn "改完执行: caddy validate --config $CADDYFILE && systemctl reload caddy"
+    exit 0
   else
-    warn "Caddyfile 未 import ${SNIPPET_DIR}，改为在文件末尾追加站点块。"
+    warn "Caddyfile 未 import conf.d，改为在文件末尾追加站点块。"
     {
       printf '\n# ---- 由 setup-agent-subdomain.sh 追加 (%s) ----\n' "$STAMP"
       printf '%s\n' "$SNIPPET_BODY"
