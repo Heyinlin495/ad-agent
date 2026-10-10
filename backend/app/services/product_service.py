@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import io
+import time
 
 from PIL import Image
+from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BadRequestError
@@ -27,24 +29,29 @@ def analyze_product(
     db: Session, image_bytes: bytes, filename: str, hint: str | None = None
 ) -> AnalyzeResponse:
     """对上传的产品图执行完整分析，返回识别结果 + 质检报告。"""
+    t0 = time.monotonic()
     try:
         img, mime = validate_image(image_bytes, filename)
     except ImageProcessError as exc:
         raise BadRequestError(str(exc)) from exc
+    t_decode = time.monotonic()
 
     # 预处理：EXIF 纠正 → 压缩 → 质量检测
     img = apply_exif_orientation(img)
     compressed = compress_image(img)
     quality: QualityReport = detect_quality(compressed)
+    t_pre = time.monotonic()
 
     # 去背景得到透明主体图
     subject = remove_background(compressed)
+    t_rembg = time.monotonic()
 
     # 保存原图与主体图
     original_url = storage.save_bytes(
         _to_bytes(compressed.convert("RGB"), "JPEG"), filename
     )
     subject_url = storage.save_bytes(_to_bytes(subject, "PNG"), "subject.png")
+    t_store = time.monotonic()
 
     # 多模态识别
     llm = get_llm()
@@ -56,6 +63,7 @@ def analyze_product(
         purpose="product_analysis",
     )
     analysis = ProductAnalysis.model_validate(result)
+    t_llm = time.monotonic()
 
     # 持久化
     product = Product(
@@ -76,6 +84,19 @@ def analyze_product(
     db.add(product)
     db.commit()
     db.refresh(product)
+    t_end = time.monotonic()
+
+    # 分段耗时：定位识别瓶颈的唯一依据（否则只能凭猜）
+    logger.info(
+        "[analyze] 耗时明细 | 解码 {:.2f}s | 预处理 {:.2f}s | 抠图 {:.2f}s | 存储 {:.2f}s | 视觉识别 {:.2f}s | 落库 {:.2f}s | 总计 {:.2f}s",
+        t_decode - t0,
+        t_pre - t_decode,
+        t_rembg - t_pre,
+        t_store - t_rembg,
+        t_llm - t_store,
+        t_end - t_llm,
+        t_end - t0,
+    )
 
     return AnalyzeResponse(
         product=ProductOut(

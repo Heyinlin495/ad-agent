@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -134,27 +135,38 @@ def _keep_main_subject(rgba: Image.Image, iterations: int = 5) -> Image.Image:
         return rgba
 
 
+@lru_cache(maxsize=4)
+def _rembg_session(name: str):
+    """进程内缓存 rembg 推理会话（按模型名）。
+
+    ⚠ 必须定义在**模块级**：早期实现把 ``_session`` 连同 ``@lru_cache`` 定义在
+    ``remove_background`` 函数体内，装饰器会随每次调用重新创建、缓存永远是空的，
+    于是**每个识别请求都会重新初始化一遍 ONNX 会话**（birefnet 数百 MB），
+    这是识别慢的头号原因。
+    """
+    from rembg import new_session
+
+    return new_session(name)
+
+
+# 抠图模型多级策略：birefnet-general（复杂手持场景最稳）→ isnet-general-use → u2net。
+# 首个模型成功即返回，后续档位只在前面加载/推理失败时才触发。
+_REMBG_MODELS = ("birefnet-general", "isnet-general-use", "u2net")
+
+
 def remove_background(img: Image.Image) -> Image.Image:
     """使用 rembg 去除背景，输出 RGBA 透明主体图。
 
     多级模型策略：birefnet-general（对复杂手持场景最稳）→ isnet-general-use → u2net。
-    session 进程内缓存，避免重复加载模型；抠图后做主体碎片清理；
+    session 进程内缓存（见 ``_rembg_session``），避免重复加载模型；抠图后做主体碎片清理；
     全部失败时降级返回原图（白色背景）。
     """
-    from functools import lru_cache
-
-    @lru_cache(maxsize=4)
-    def _session(name: str):
-        from rembg import new_session
-
-        return new_session(name)
-
     last_exc: Exception | None = None
-    for model in ("birefnet-general", "isnet-general-use", "u2net"):
+    for model in _REMBG_MODELS:
         try:
             from rembg import remove
 
-            out = remove(img, session=_session(model))
+            out = remove(img, session=_rembg_session(model))
             return _keep_main_subject(out.convert("RGBA"))
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"rembg 模型 {model} 抠图失败，尝试下一档: {exc}")

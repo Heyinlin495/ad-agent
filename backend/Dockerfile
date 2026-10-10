@@ -42,7 +42,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PATH="/opt/venv/bin:$PATH" \
-    ASSETS_DIR=/app/assets
+    ASSETS_DIR=/app/assets \
+    U2NET_HOME=/data/models
 
 ARG BUILD_DEPS=core
 
@@ -63,8 +64,9 @@ WORKDIR /app
 # 创建非 root 运行用户，并给可写目录授权
 # 固定 uid/gid=1000：便于 compose 挂载的 named volume（/data）在部署时用 chown 1000:1000 修正属主，
 # 否则卷默认 root 属主，非 root 的 app 用户无法写 /data/storage（会导致 storage 初始化 PermissionError）
+# /data/models 用于 rembg 模型缓存（U2NET_HOME）——落在数据卷上，容器重建/重部署后无需重新下载
 RUN groupadd -r -g 1000 app && useradd -r -u 1000 -g 1000 -d /app app \
-    && mkdir -p /app/data /app/assets /data/storage \
+    && mkdir -p /app/data /app/assets /data/storage /data/models \
     && chown -R app:app /app /data
 
 # 非 root 运行（安全）：镜像内以 app 用户启动；

@@ -2,6 +2,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
@@ -44,7 +45,17 @@ async def analyze(
 ) -> dict:
     """上传产品图，返回识别结果 + 质检报告。"""
     image_bytes = await read_upload_limited(file)
-    result = product_service.analyze_product(db, image_bytes, file.filename or "image.jpg", hint or None)
+    # analyze_product 是纯同步的重活（抠图 / 视觉模型 / 对象存储，可达数十秒）。
+    # 若直接在 async 端点里调用，会阻塞 uvicorn 事件循环——单 worker 下相当于
+    # 冻结整个服务：识别期间 /health、/settings 全部无响应，前端随即显示
+    # “后端未连接”。丢到线程池执行，事件循环得以继续处理其它请求。
+    result = await run_in_threadpool(
+        product_service.analyze_product,
+        db,
+        image_bytes,
+        file.filename or "image.jpg",
+        hint or None,
+    )
     return ok(result.model_dump())
 
 
