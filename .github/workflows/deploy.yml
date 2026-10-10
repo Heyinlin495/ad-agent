@@ -56,8 +56,13 @@ jobs:
           push: true
           tags: ${{ steps.meta-backend.outputs.tags }}
           labels: ${{ steps.meta-backend.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # 构建缓存存到 GHCR（type=registry），**不用 type=gha**：
+          # 本镜像 3.66GB（解压 11.3GB），mode=max 会缓存全部中间层，
+          # 极易触顶 GitHub Actions 每仓库 10GB 缓存上限而被淘汰 → 每次冷构建
+          # → 各层 digest 全变 → 服务器每次冷拉 3.66GB（SSH 部署 18 分钟的主因）。
+          # registry 缓存无此上限，且与镜像同库同权限。
+          cache-from: type=registry,ref=${{ env.IMAGE }}/backend:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}/backend:buildcache,mode=max,ignore-error=true
 
       # ---- 前端 ----
       - name: 构建并推送 web
@@ -76,8 +81,8 @@ jobs:
           push: true
           tags: ${{ steps.meta-web.outputs.tags }}
           labels: ${{ steps.meta-web.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=${{ env.IMAGE }}/web:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}/web:buildcache,mode=max,ignore-error=true
 
       # ---- 让镜像对服务器免登录可 pull（public）----
       - name: 设置 GHCR 包为公开
