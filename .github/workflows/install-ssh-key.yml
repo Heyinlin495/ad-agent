@@ -1,0 +1,36 @@
+name: Install SSH Key
+
+# 一次性运维 workflow：把管理员公钥追加到服务器的 ~/.ssh/authorized_keys。
+# 仅在手动触发时运行（workflow_dispatch），不会随 push 自动执行，
+# 也不会触发镜像构建/部署。
+on:
+  workflow_dispatch:
+
+jobs:
+  install-key:
+    name: 安装管理员 SSH 公钥
+    runs-on: ubuntu-latest
+    steps:
+      - name: 通过已有凭据追加公钥
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -e
+            PUBKEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPcBcAxY4Ck1/ZjVhb+U4/szkGlhkPqMAs3fL5a0lojJ ad-agent-admin-key'
+            mkdir -p ~/.ssh
+            chmod 700 ~/.ssh
+            touch ~/.ssh/authorized_keys
+            chmod 600 ~/.ssh/authorized_keys
+            if grep -qF "$PUBKEY" ~/.ssh/authorized_keys; then
+              echo "公钥已存在，无需重复安装"
+            else
+              echo "$PUBKEY" >> ~/.ssh/authorized_keys
+              echo "公钥已追加"
+            fi
+            echo "authorized_keys 行数: $(wc -l < ~/.ssh/authorized_keys | tr -d ' ')"
+            echo "当前登录用户: $(id -un)  uid=$(id -u)"
+            echo "HOME: $HOME"
