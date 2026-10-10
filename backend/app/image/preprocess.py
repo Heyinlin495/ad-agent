@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import io
+import os
+import threading
+import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -135,43 +138,107 @@ def _keep_main_subject(rgba: Image.Image, iterations: int = 5) -> Image.Image:
         return rgba
 
 
-@lru_cache(maxsize=4)
-def _rembg_session(name: str):
-    """进程内缓存 rembg 推理会话（按模型名）。
+_rembg_lock = threading.Lock()
 
-    ⚠ 必须定义在**模块级**：早期实现把 ``_session`` 连同 ``@lru_cache`` 定义在
-    ``remove_background`` 函数体内，装饰器会随每次调用重新创建、缓存永远是空的，
-    于是**每个识别请求都会重新初始化一遍 ONNX 会话**（birefnet 数百 MB），
-    这是识别慢的头号原因。
+# 抠图失败后的冷却期：失败（含模型下载中断）不会写入 lru_cache（lru_cache 不缓存
+# 异常），若不设冷却，每个识别请求都会重复触发一次数百 MB 的模型下载/加载重试。
+_REMBG_FAIL_COOLDOWN_SEC = 300
+_rembg_failed_at: dict[str, float] = {}
+
+
+def _rembg_home() -> str:
+    """rembg 模型缓存目录（与 rembg BaseSession.u2net_home 的解析保持一致）。"""
+    return os.path.expanduser(
+        os.getenv("U2NET_HOME")
+        or os.path.join(os.getenv("XDG_DATA_HOME", "~"), ".u2net")
+    )
+
+
+def _purge_stale_rembg_tmp(max_age_sec: int = 600) -> None:
+    """清理 rembg(pooch) 中断下载残留的 tmp* 文件。
+
+    pooch 先把模型下到 ``tmpXXXX``、校验 md5 后再改名落地；下载被中断（网络超时 /
+    进程重启）时临时文件会残留，反复重试持续堆积（线上曾积到 3.4GB 打满磁盘）。
+    只删除 mtime 超过 ``max_age_sec`` 的 tmp 文件，避免误删正在进行的下载。
     """
+    home = _rembg_home()
+    try:
+        now = time.time()
+        for name in os.listdir(home):
+            if not name.startswith("tmp"):
+                continue
+            path = os.path.join(home, name)
+            try:
+                if now - os.path.getmtime(path) > max_age_sec:
+                    os.remove(path)
+                    logger.info(f"清理残留的模型临时文件: {path}")
+            except OSError:
+                pass
+    except FileNotFoundError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"清理模型临时文件失败: {exc}")
+
+
+@lru_cache(maxsize=4)
+def _load_rembg_session(name: str):
     from rembg import new_session
 
+    _purge_stale_rembg_tmp()
     return new_session(name)
 
 
-# 抠图模型多级策略：birefnet-general（复杂手持场景最稳）→ isnet-general-use → u2net。
-# 首个模型成功即返回，后续档位只在前面加载/推理失败时才触发。
-_REMBG_MODELS = ("birefnet-general", "isnet-general-use", "u2net")
+def _rembg_session(name: str):
+    """进程内缓存 rembg 推理会话（按模型名），并用锁串行化首次创建。
+
+    ⚠ 缓存函数必须定义在**模块级**：早期实现把 ``_session`` 连同 ``@lru_cache``
+    定义在 ``remove_background`` 函数体内，装饰器随每次调用重建、缓存永远为空，
+    于是每个识别请求都要重新初始化一遍 ONNX 会话，这是识别慢的头号原因。
+
+    ⚠ 外层再加 ``threading.Lock``：``lru_cache`` 不保证并发首次调用只执行一次，
+    多请求同时到达时会各自触发一次模型下载/加载（线上曾并发下 4~5 份 973MB 模型）。
+    """
+    with _rembg_lock:
+        return _load_rembg_session(name)
+
+
+# 抠图模型多级策略。**刻意不使用 birefnet-general**：其 onnx 达 973MB，在生产机
+# （2 核 2GB、出口带宽约 1MB/s）下载动辄十几分钟且极易中断，推理也远超该配置的
+# 内存/算力预算。改用轻量档：
+#   u2net（约 176MB，320x320 输入，CPU 上快）→ isnet-general-use（约 176MB，备选）。
+# 首个成功即返回，后续档位仅在前档加载/推理失败时触发。
+_REMBG_MODELS = ("u2net", "isnet-general-use")
+
+
+def _model_in_cooldown(name: str) -> bool:
+    ts = _rembg_failed_at.get(name)
+    return ts is not None and (time.time() - ts) < _REMBG_FAIL_COOLDOWN_SEC
 
 
 def remove_background(img: Image.Image) -> Image.Image:
     """使用 rembg 去除背景，输出 RGBA 透明主体图。
 
-    多级模型策略：birefnet-general（对复杂手持场景最稳）→ isnet-general-use → u2net。
-    session 进程内缓存（见 ``_rembg_session``），避免重复加载模型；抠图后做主体碎片清理；
-    全部失败时降级返回原图（白色背景）。
+    多级模型策略见 ``_REMBG_MODELS``；会话进程内缓存（见 ``_rembg_session``），
+    抠图后做主体碎片清理；全部失败时降级返回原图（白色背景）。
+    失败的模型会进入冷却期，避免每个请求重复触发大模型的下载/加载。
     """
     last_exc: Exception | None = None
     for model in _REMBG_MODELS:
+        if _model_in_cooldown(model):
+            continue
         try:
             from rembg import remove
 
             out = remove(img, session=_rembg_session(model))
             return _keep_main_subject(out.convert("RGBA"))
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"rembg 模型 {model} 抠图失败，尝试下一档: {exc}")
+            _rembg_failed_at[model] = time.time()
+            logger.warning(
+                f"rembg 模型 {model} 抠图失败（进入 {_REMBG_FAIL_COOLDOWN_SEC}s 冷却），"
+                f"尝试下一档: {exc}"
+            )
             last_exc = exc
-    logger.warning(f"rembg 全部模型失败，降级为原图: {last_exc}")
+    logger.warning(f"rembg 无可用的抠图模型，降级为原图: {last_exc}")
     return img.convert("RGBA")
 
 
