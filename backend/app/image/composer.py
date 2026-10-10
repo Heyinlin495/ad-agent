@@ -233,6 +233,7 @@ def _draw_text_band(
 
 # ---------- 版式模板 ----------
 
+
 def _tpl_centered(canvas, subject, design, texts, text_color):
     w, h = canvas.size
     _paste_subject(canvas, subject, box_ratio=design.get("_subject_scale", 0.62), center=(0.5, 0.40))
@@ -420,6 +421,15 @@ def _hero_text_layout(
     right = x  # 内容实际右边界
     s = max(0.45, float(scale))
 
+    # ⚠️ 以下基准字号是**画布固定比例**，被两条链路共用：
+    #   ① compose_ad_image → _tpl_hero（抠图贴图，文字与主体争夺画布）
+    #      这里的块高直接决定留给主体的自由区大小，改大会让宽扁产品（电视/显示器）
+    #      被挤成窄条，test_hero_wide_product_uses_full_width_band 会失败。
+    #   ② compose_ad_from_image → _tpl_hero_overlay / _tpl_magazine_overlay（整图叠加）
+    #      主体已在画面里，文字只需避开，故通过外层 `scale` 系数放大即可（不动基准值）。
+    # 因此**放大字号只能走 ② 的 scale 系数**，不要直接上调这里的比例——会连带改变 ①
+    # 的主体占位。历史事故：把标题从 0.075 上调到 0.088，① 的宽扁产品主体宽度
+    # 从 648px 掉到 579px，触发回归失败。
     brand = (design.get("_brand") or "").strip()
     if brand:
         fb = load_font(max(9, int(h * 0.026 * s)), bold=True)
@@ -455,6 +465,8 @@ def _hero_text_layout(
 
     bullets = [b for b in texts.get("bullets", []) if b and b.strip()]
     if bullets:
+        # 卖点字号 2.4% 画高偏小，整图叠加链路会靠外层 scale 放大到可读；
+        # 过长的卖点截断到合理长度，避免放大后单个 chip 撑满整栏宽度。
         font_chip = load_font(max(9, int(h * 0.024 * s)), bold=True)
         pad_x = int(font_chip.size * 0.9)
         pad_y = int(font_chip.size * 0.5)
@@ -462,10 +474,11 @@ def _hero_text_layout(
         cy = y + int(h * 0.018 * s)
         last_bottom = cy
         for it in bullets[:3]:
-            tw = int(font_chip.getlength(it))
+            label = _shorten_chip(it, font_chip, max_w)
+            tw = int(font_chip.getlength(label))
             box_w = tw + pad_x * 2
             box_h = int(font_chip.size) + pad_y * 2
-            items.append({"kind": "chip", "text": it, "font": font_chip, "x": x, "y": cy,
+            items.append({"kind": "chip", "text": label, "font": font_chip, "x": x, "y": cy,
                           "box_w": box_w, "box_h": box_h, "pad_x": pad_x, "pad_y": pad_y})
             right = max(right, x + box_w)
             last_bottom = cy + box_h
@@ -481,6 +494,32 @@ def _hero_text_layout(
         y = cy0 + cta_h
 
     return y, items, right - x
+
+
+def _shorten_chip(text: str, font: Any, max_w: int) -> str:
+    """把过长的卖点截断到单行可容纳（chip 不换行）。
+
+    字号放大后原来能放下的整句会超栏宽，若不截断会溢出到主体上。
+    优先在词边界断开并加省略号；单片 chip 不超过栏宽的 92%。
+    """
+    limit = int(max_w * 0.92)
+    t = str(text).strip()
+    if not t or font is None:
+        return t
+    if font.getlength(t) <= limit:
+        return t
+    words = t.split()
+    out = ""
+    for wd in words:
+        cand = f"{out} {wd}".strip()
+        if font.getlength(cand + "…") > limit:
+            break
+        out = cand
+    if not out:  # 单个超长词：硬切
+        out = t
+        while out and font.getlength(out + "…") > limit:
+            out = out[:-1]
+    return out + "…"
 
 
 def _hero_draw(
@@ -536,6 +575,14 @@ def _tpl_hero(canvas, subject, design, texts, text_color):
 
     candidates: list[dict[str, Any]] = []
     # 顶部通栏 / 左侧栏 / 右侧栏（文字占据左上或右上，块高由内容决定）
+    #
+    # 为什么这里用「固定比例字号」而不是像 hero_overlay 那样二分放大：
+    # 本版式里**文字与主体争夺同一块画布**——文字块越高，留给主体的自由区就越小。
+    # 若按"塞满可用高度"最大化字号，文字块会膨胀到 ~90% 画高（实测），主体被挤成
+    # 一条窄缝，宽扁产品（电视/显示器）直接退化成右侧小图（回归测试会失败）。
+    # 所以这里保持字号为画布固定比例（见 _hero_text_layout），靠下方候选评分在
+    # "上下通栏 / 左右栏"之间按主体可用面积择优。放大字号的需求由整图叠加链路
+    # （_tpl_hero_overlay）通过 scale 系数单独满足，本版式不参与。
     for zone, tx, tw in (
         ("top", mx, wide_w),
         ("left", mx, col_w),
@@ -1194,10 +1241,16 @@ def _tpl_hero_overlay(
         left_free = right_free = wide_w
 
     def _col_w(free: int) -> int:
-        """在主体留白内尽量宽地排文字栏（留白本身就很窄时就不要硬撑）。"""
-        if free >= int(w * 0.30):
+        """在主体留白内尽量宽地排文字栏。
+
+        阈值从画宽 30% 放宽到 16%：30% 是为"放得下通栏级标题"设的，但线上耳机图
+        实测主体左右留白只有 ~17% 画宽——那是**唯一真正干净**的区域，却因为够不着
+        30% 被整个丢掉，候选清空后退化成"最小字号 + 压主体"。窄栏配合小一点的字号
+        照样能排出干净且可读的文案，不该在版位生成阶段就把它排除。
+        """
+        if free >= int(w * 0.16):
             return min(wide_w, free)
-        return 0  # 留白太窄，该侧不放
+        return 0  # 留白太窄（< 16% 画宽），该侧确实放不了
 
     # 候选生成：(zone, x, 宽度, 顶部 y)。宽度分三档——通栏 / 半栏 / 侧栏，
     # 配合下方的字号缩放，形成"位置 × 尺寸"的二维搜索空间。
@@ -1224,9 +1277,12 @@ def _tpl_hero_overlay(
     order = {"top": 0, "left": 1, "right": 2, "bottom": 3,
              "top-left": 4, "top-right": 5, "bottom-left": 6, "bottom-right": 7}
 
-    # 字号缩放档位：先按原尺寸试，放不下再逐档缩小。
+    # 字号缩放档位：从大往小试，取"不压主体"里最大的那档。
+    # 为什么要有 >1.0 的档位：基准字号（标题 h*0.075 等）在 2000px 画布上偏小，
+    # 实测整块只占画高 17%，留白区绰绰有余——不给放大档位，文字就只能停在
+    # "缩略图上读不清"的大小。搜索是"从大到小"，故大档位在前，命中即收手。
     # 必须缩小而不是"换更窄的栏"——栏越窄换行越多、块越高（实测窄栏反而更压主体）。
-    SCALES = (1.0, 0.88, 0.78, 0.68, 0.58, 0.50)
+    SCALES = (1.60, 1.38, 1.20, 1.0, 0.88, 0.78, 0.68, 0.58, 0.50)
 
     # 内容精简档位：居中主体会让上下留白只有 ~12~16% 画高，此时即使缩到最小字号，
     # "大标题 + 副标题 + 3 个卖点徽章 + CTA"也塞不进留白。与其压住产品或缩到
@@ -1240,36 +1296,51 @@ def _tpl_hero_overlay(
             t["subheadline"] = ""
         return t
 
+    # 搜索策略：把**所有**"完全不压主体"的干净候选全部收集起来，最后统一排序择优。
+    #
+    # 为什么不能"命中第一个干净方案就收手"：原实现按 (level, zone, scale) 顺序遍历，
+    # 一旦某个版位在小字号下"干净"就立刻 break，导致**宁可要小字号也不要大字号**。
+    # 线上实测：耳机主体铺满画面时，左上角窄栏在小字号下干净 → 被选中，
+    # 标题只有约 75px（画高 3.75%），缩略图上根本读不清；而同一张画的右侧留白
+    # 其实能容纳大得多的字号，只因排序在前被提前退出而从未被考虑。
+    #
+    # **纵向滑动**：早先每个版位只试"贴顶(y=my) / 贴底(底部版位)"两个纵坐标。当主体
+    # 纵向跨度大时，顶部干净带可能只有 ~8% 画高，贴顶排布必然压主体；但把文字**往下
+    # 挪一点或贴着主体上沿**往往就能腾出空间。这里对每个版位的候选纵坐标做一组采样
+    # （贴顶、贴主体上沿、垂直居中、贴底），配合字号档形成 (纵坐标 × 字号) 二维搜索，
+    # 显著扩大"干净且字号大"候选的命中率。
     candidates: list[dict[str, Any]] = []
     for level in (0, 1, 2):
         t = _trim(level)
+        level_cands: list[dict[str, Any]] = []
         for zone, tx, tw, ty in _zone_specs():
-            if tw < int(w * 0.22):      # 窄于可读下限，放弃
+            if tw < int(w * 0.16):      # 窄于可读下限，放弃
                 continue
             for sc in SCALES:
                 th, items, cw = _hero_text_layout(canvas, design, t, tx, tw, scale=sc)
-                yy = ty if ty else h - my - th   # bottom-* 版位贴底
-                if yy + th > h - int(h * 0.02):  # 超出下边界，缩小后再试
-                    continue
-                trect = (tx, yy, tx + cw, yy + th)
-                ov = _overlap_area(trect, subject_rect)
-                if ov <= 0:
-                    # 找到"完全不压主体"的方案即可收手：位置干净、字号已尽量大、
-                    # 内容已尽量全（level 越小保留越多）
-                    candidates.append({"zone": zone, "x": tx, "y": yy, "w": tw, "h": th,
-                                       "cw": cw, "items": items, "scale": sc,
-                                       "level": level, "overlap": 0})
-                    break
-            if candidates and candidates[-1]["level"] == level and candidates[-1]["overlap"] == 0:
-                break
-        if candidates:
-            break
+                # 候选纵坐标：贴顶 / 贴主体上沿 / 垂直居中 / 贴底（去重，限制在画布内）
+                ys = {ty if ty else h - my - th,
+                      h - my - th,
+                      max(my, (my + (h - my) - th) // 2)}
+                if subject_rect is not None and subject_rect[1] - gap - th >= my:
+                    ys.add(subject_rect[1] - gap - th)   # 贴着主体上沿排
+                for yy in sorted(ys):
+                    if yy < my or yy + th > h - int(h * 0.02):
+                        continue
+                    trect = (tx, yy, tx + cw, yy + th)
+                    if _overlap_area(trect, subject_rect) <= 0:
+                        level_cands.append({"zone": zone, "x": tx, "y": yy, "w": tw, "h": th,
+                                            "cw": cw, "items": items, "scale": sc,
+                                            "level": level, "overlap": 0})
+        if level_cands:
+            candidates = level_cands
+            break   # 该内容档已有干净方案，不再放宽内容
 
     if not candidates:
         # 实在挤不下（主体几乎铺满画布）：退到"最小字号 + 最简内容 + 重叠最小"的方案。
         best_ov = None
         for zone, tx, tw, ty in _zone_specs():
-            if tw < int(w * 0.22):
+            if tw < int(w * 0.16):
                 continue
             th, items, cw = _hero_text_layout(canvas, design, _trim(2), tx, tw, scale=0.50)
             yy = ty if ty else h - my - th
@@ -1282,20 +1353,64 @@ def _tpl_hero_overlay(
                                "cw": cw, "items": items, "scale": 0.50,
                                "level": 2, "overlap": ov}]
 
-    def sort_key(c: dict[str, Any]) -> tuple[int, int, int, float, int]:
+    # 可读性下限：标题实际字号低于画高的 4.5% 时，缩略图/手机端基本读不清。
+    # 排序时用它做一档"是否达到可读"的优先，避免把"极小字号但位置最合意"的方案选中。
+    #
+    # 注意：这里算的是**放大后**的实际字号（基准比例 × 候选 scale）。本链路（整图叠加）
+    # 的主体已经在画面里，文字只需避开、不与主体争画布，所以默认就该往上放大取大档；
+    # SCALES 里 >1.0 的档位正是为此保留。基准比例仍是 _hero_text_layout 的 0.075，
+    # 不要为了放大而改动基准值（会连带改变抠图贴图链路 _tpl_hero 的主体占位）。
+    legible_floor = h * 0.045
+    base_title_ratio = 0.075
+
+    def _has_orphan_line(c: dict[str, Any]) -> int:
+        """标题最后一行只剩 1~2 个字符 → 排版孤字（如"沉浸式/听觉盛/宴"）。
+
+        孤字是明显的排版缺陷：既难看又浪费一整行高度。窄栏 + 大字号时极易触发。
+        返回 0 表示没有孤字（好），1 表示有孤字（差），作为排序里的一档惩罚——
+        宁可牺牲一点点字号，也不要输出带孤字的标题。
+        """
+        for it in c.get("items") or []:
+            if it.get("kind") != "text" or it.get("stroke") != 1:
+                continue    # 只检查标题行（stroke=1 是标题的绘制标记）
+            font = it.get("font")
+            if font is None:
+                continue
+            lines = _wrap_text(str(it.get("text") or ""), font, int(it.get("max_w") or c["w"]))
+            if len(lines) >= 2 and len(lines[-1].strip()) <= 2:
+                return 1
+        return 0
+
+    def sort_key(c: dict[str, Any]) -> tuple[int, int, int, int, int, float, int, int]:
         # 用**真实内容框**（cw）算相交，而不是整个栏宽——否则窄内容配宽栏会
         # 被误判成"压主体"，把本来干净的位置排到后面
         cw = int(c.get("cw") or c["w"])
         trect = (c["x"], c["y"], c["x"] + cw, c["y"] + c["h"])
         ov = _overlap_area(trect, subject_rect)
         clean = 0 if ov <= 0 else 1
-        # 排序优先级：① 干净 ② 重叠面积 ③ 保留内容更多（level 小）④ 字号更大
-        # ⑤ 视觉方案指定版位 ⑥ 版位固定顺序
-        return (clean, ov, int(c.get("level", 0)), -float(c.get("scale", 1.0)),
+        # 标题实际字号（基准比例 × 本候选采用的放大档位）
+        title_px = max(14, int(h * base_title_ratio * float(c.get("scale", 1.0))))
+        small = 0 if title_px >= legible_floor else 1
+        orphan = _has_orphan_line(c)
+        # 排序优先级：① 干净 ② 重叠面积 ③ 标题无孤字 ④ **字号达到可读下限**
+        # ⑤ 保留内容更多（level 小）⑥ 字号更大 ⑦ 视觉方案指定版位 ⑧ 版位固定顺序
+        #
+        # 为什么"可读"要排在"内容更多"之前：卖点徽章被裁掉只是信息量减少，
+        # 而字号小到读不清等于文案完全失效——后者对广告的伤害大得多。
+        # 为什么"孤字"排在"字号"之前：孤字是硬伤（一眼可见的排版事故），
+        # 而字号小一档只是可读性略降，两者不可同日而语。
+        return (clean, ov, orphan, small, int(c.get("level", 0)),
+                -float(c.get("scale", 1.0)),
                 0 if c["zone"] == pref else 1, order.get(c["zone"], 9))
 
     candidates.sort(key=sort_key)
     best = candidates[0]
+
+    # 记录实际采用的版位与字号档，供版式调试与回归比对（此前这些信息只活在局部变量里，
+    # 线上排查"文案为什么这么小"时无从下手）。
+    design["_text_zone"] = best.get("zone")
+    design["_text_scale"] = round(float(best.get("scale", 1.0)), 3)
+    design["_text_level"] = int(best.get("level", 0))
 
     tx0, ty0 = best["x"], best["y"]
     cw = int(best.get("cw") or best["w"])
