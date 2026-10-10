@@ -146,11 +146,14 @@ jobs:
             for c in ad-agent-backend ad-agent-web ad-agent-redis ad-agent-postgres; do
               S docker rm -f "$c" >/dev/null 2>&1 || true
             done
-            # 释放磁盘：历史 unsed 镜像/构建缓存/停止容器都清掉（旧版 full 后端镜像累计几个 GB），
-            # 防止下次拉取 backend 时 "no space left on device"
-            S docker system prune -af >/dev/null 2>&1 || true
-            S docker builder prune -af >/dev/null 2>&1 || true
+            # ⚠ 拉取前**绝不**删镜像！镜像层正是 `docker compose pull` 的复用对象：
+            #   曾经的 `docker system prune -af` 会连带删掉上一版 backend 镜像及其全部层，
+            #   使随后的 pull 变成“冷拉”——每次都要重新下载 2GB+ 的 full 后端镜像。
+            #   实测上一次部署 SSH 步骤 23m21s 里有 20m41s 全耗在 backend 镜像冷拉上。
+            #   这里只回收「与镜像层无关」的空间：停止的容器 + 构建缓存（服务器本身不构建镜像，
+            #   但仍可能残留多 GB 构建缓存），保证镜像层完好，pull 只下变化的那几层。
             S docker container prune -f >/dev/null 2>&1 || true
+            S docker builder prune -af >/dev/null 2>&1 || true
             echo '== 磁盘占用（部署前）=='
             S df -h / /data 2>/dev/null | tail -n +1 || true
             # 修正数据卷属主：非 root 的 app 用户(uid=1000)需要可写 /data。
@@ -165,7 +168,9 @@ jobs:
             fi
             S docker compose -f docker-compose.deploy.yml pull
             S docker compose -f docker-compose.deploy.yml up -d --remove-orphans
-            S docker image prune -f >/dev/null 2>&1 || true
+            # 新镜像已进入运行态（in-use）后，回收上一版镜像/悬空层才安全——放在 pull 之后，
+            # 既清掉了旧镜像占用的磁盘，又不会破坏下一次 pull 的层复用。
+            S docker system prune -af >/dev/null 2>&1 || true
             echo '====== 部署完成: docker compose ps ======'
             S docker compose -f docker-compose.deploy.yml ps
 
