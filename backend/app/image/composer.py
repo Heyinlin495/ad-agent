@@ -51,6 +51,65 @@ def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[
     return lines
 
 
+def _wrap_text_balanced(
+    text: str, font: ImageFont.FreeTypeFont, max_width: int
+) -> list[str]:
+    """尽量等宽的换行，专门用来消除**孤字行**（末行只剩 1 个字）。
+
+    贪心换行（`_wrap_text`）会"尽量往每行塞"，短文本就容易留下末行孤字，例如
+    「沉浸式听觉盛宴」在窄栏被排成 `沉浸式 / 听觉盛 / 宴`。这里把 token 按行数**均分**，
+    得到 `沉浸式听觉 / 盛宴` 这类更均衡的断法。
+
+    只在贪心结果确实出现独字末行时才改写；否则原样返回，避免影响既有排版。
+    英文按词边界重排、中文按字重排，保证不破坏语义单位。
+    """
+    greedy = _wrap_text(text, font, max_width)
+    # 孤字的定义：末行仅剩 1 个字符（如 "沉浸式听觉盛宴" → ".../宴"）。
+    # 2 个字符不算孤字（中文两字成词很常见，如 "视界"），阈值放宽可避免过度改写。
+    if len(greedy) < 2 or len(greedy[-1].strip()) > 1:
+        return greedy    # 没有孤字，保持原样
+
+    cjk = _has_cjk(text)
+    tokens: list[str] = [c for c in text if c.strip()] if cjk else text.split()
+    if not tokens:
+        return greedy
+
+    def _join(chunk: list[str]) -> str:
+        return "".join(chunk) if cjk else " ".join(chunk)
+
+    n = len(greedy)
+
+    def _try_balance(nlines: int) -> list[str] | None:
+        """把 tokens 尽量均分成 nlines 行，每行都不得溢出栏宽；放不下则返回 None。
+
+        均分会让各行长度最多差 1，末行因此天然不会只剩 1 个字（除非 tokens 本来就
+        只比 nlines 多一个——那种情况下面会尝试增加行数）。
+        """
+        if nlines < 1 or nlines > len(tokens):
+            return None
+        base = len(tokens) // nlines
+        extra = len(tokens) % nlines
+        out: list[str] = []
+        idx = 0
+        for li in range(nlines):
+            take = base + (1 if li < extra else 0)
+            chunk = tokens[idx:idx + take]
+            if not chunk:
+                return None
+            if font.getlength(_join(chunk)) > max_width:
+                return None          # 该行放不下，此方案作废
+            out.append(_join(chunk))
+            idx += take
+        return out
+
+    # 行数可以保持不变，也可以多一两行——只要末行不再是孤字。
+    for nlines in range(n, min(n + 3, len(tokens)) + 1):
+        cand = _try_balance(nlines)
+        if cand and len(cand) >= 2 and len(cand[-1].strip()) > 1:
+            return cand
+    return greedy
+
+
 def _draw_text_block(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -64,11 +123,18 @@ def _draw_text_block(
     line_height: float = 1.3,
     stroke: int = 0,
     stroke_color: tuple[int, int, int] = (0, 0, 0),
+    lines: list[str] | None = None,
 ) -> int:
-    """绘制多行文本，返回结束后的 y 坐标。"""
+    """绘制多行文本，返回结束后的 y 坐标。
+
+    `lines` 可由调用方预传（度量阶段算好的换行结果），保证 **measure == draw**——
+    否则均衡换行在度量阶段生效、绘制阶段又被贪心重排，行数与位置会对不上。
+    """
     if _is_rtl(text):
         text = reshape_rtl(text)
-    lines = _wrap_text(text, font, max_width)
+        lines = None    # RTL 文本的 reshape 会改变字符，必须重新换行
+    if lines is None:
+        lines = _wrap_text(text, font, max_width)
     spacing = int(font.size * line_height)
     for line in lines:
         if align == "center":
@@ -443,9 +509,12 @@ def _hero_text_layout(
 
     font_h = load_font(max(14, int(h * 0.075 * s)), bold=True, rtl=_is_rtl(texts["headline"]))
     if texts["headline"]:
-        lines = _wrap_text(texts["headline"], font_h, max_w)
+        # 标题用均衡换行：窄栏 + 大字号下贪心换行极易留下孤字末行（"…/宴"）。
+        # 均衡换行能在**不改字号**的前提下消除孤字，比"为了躲孤字而降字号"更划算。
+        lines = _wrap_text_balanced(texts["headline"], font_h, max_w)
         items.append({"kind": "text", "text": texts["headline"], "font": font_h, "x": x,
-                      "y": y, "max_w": max_w, "align": "left", "stroke": 1, "paint": "tc"})
+                      "y": y, "max_w": max_w, "align": "left", "stroke": 1, "paint": "tc",
+                      "lines": lines})
         right = max(right, x + max((int(font_h.getlength(ln)) for ln in lines), default=0))
         y += len(lines) * int(font_h.size * 1.3)
 
@@ -537,7 +606,8 @@ def _hero_draw(
         if kind == "text":
             color = accent if (it["paint"] == "accent" and accent) else tc
             _draw_text_block(draw, it["text"], it["font"], int(it["x"]), y, int(it["max_w"]),
-                             color, align=it["align"], stroke=it["stroke"], stroke_color=color)
+                             color, align=it["align"], stroke=it["stroke"], stroke_color=color,
+                             lines=it.get("lines"))
         elif kind == "rule":
             draw.rectangle([int(it["x"]), y, int(it["x"]) + int(it["w"]), y + int(it["h"])],
                            fill=accent if accent else tc)
@@ -1367,17 +1437,20 @@ def _tpl_hero_overlay(
         """标题最后一行只剩 1~2 个字符 → 排版孤字（如"沉浸式/听觉盛/宴"）。
 
         孤字是明显的排版缺陷：既难看又浪费一整行高度。窄栏 + 大字号时极易触发。
-        返回 0 表示没有孤字（好），1 表示有孤字（差），作为排序里的一档惩罚——
-        宁可牺牲一点点字号，也不要输出带孤字的标题。
+        返回 0 表示没有孤字（好），1 表示有孤字（差），作为排序里的一档惩罚。
+        优先读排版阶段存下的 `lines`（均衡换行后的结果），保证与最终绘制一致。
         """
         for it in c.get("items") or []:
             if it.get("kind") != "text" or it.get("stroke") != 1:
                 continue    # 只检查标题行（stroke=1 是标题的绘制标记）
-            font = it.get("font")
-            if font is None:
-                continue
-            lines = _wrap_text(str(it.get("text") or ""), font, int(it.get("max_w") or c["w"]))
-            if len(lines) >= 2 and len(lines[-1].strip()) <= 2:
+            lines = it.get("lines")
+            if not lines:
+                font = it.get("font")
+                if font is None:
+                    continue
+                lines = _wrap_text_balanced(
+                    str(it.get("text") or ""), font, int(it.get("max_w") or c["w"]))
+            if len(lines) >= 2 and len(lines[-1].strip()) <= 1:
                 return 1
         return 0
 

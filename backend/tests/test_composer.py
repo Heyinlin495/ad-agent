@@ -124,16 +124,15 @@ def test_overlay_lifts_font_to_legible_size():
 
 
 def test_overlay_headline_has_no_orphan_line():
-    """标题最后一行不得只剩 1~2 个字符（孤字行）——窄栏 + 大字号时的典型缺陷。
+    """标题最后一行不得只剩 1 个字（孤字行）——窄栏 + 大字号时的典型缺陷。
 
-    用渲染时**实际采用的字号档与栏宽**重排同一标题；孤字是不可接受的排版硬伤，
-    排序逻辑已把"无孤字"排在"字号更大"之前，本用例锁定该行为。
+    排序逻辑已把"无孤字"排在"字号更大"之前；更根本的是 `_wrap_text_balanced` 会把
+    `沉浸式/听觉盛/宴` 重排成 `沉浸式/听觉/盛宴`，从而**不必为了躲孤字而降字号**。
     """
     subject = (520, 260, 1960, 1880)
     design, _ = _overlay((2000, 2000), subject)
     assert "_text_scale" in design, "未记录采用的字号档，无法复核"
     canvas = _make_canvas((2000, 2000))
-    # 以产出文字框宽度作为栏宽、以实际采用的字号档重排
     box = design["_text_box"]
     col_w = max(120, box[2] - box[0])
     texts = {"headline": "沉浸式听觉盛宴", "subheadline": "", "cta": "", "bullets": []}
@@ -143,8 +142,21 @@ def test_overlay_headline_has_no_orphan_line():
     checked = 0
     for it in items:
         if it.get("kind") == "text" and it.get("stroke") == 1:
-            lines = composer._wrap_text(it["text"], it["font"], it["max_w"])
+            lines = it.get("lines") or composer._wrap_text(
+                it["text"], it["font"], it["max_w"])
             checked += 1
-            assert len(lines) < 2 or len(lines[-1].strip()) > 2, f"标题出现孤字行: {lines}"
+            assert len(lines) < 2 or len(lines[-1].strip()) > 1, f"标题出现孤字行: {lines}"
     assert checked == 1, "未找到标题行，用例失效"
+
+
+def test_balanced_wrap_removes_orphan_without_shrinking():
+    """`_wrap_text_balanced` 应在**不缩小字号**的前提下消除独字末行。"""
+    font = composer.load_font(150, bold=True)
+    greedy = composer._wrap_text("沉浸式听觉盛宴", font, 500)
+    assert len(greedy[-1].strip()) <= 1, "前置条件不成立：贪心换行本应产生孤字"
+    balanced = composer._wrap_text_balanced("沉浸式听觉盛宴", font, 500)
+    assert len(balanced) == len(greedy), "行数不应增加"
+    assert len(balanced[-1].strip()) > 1, f"均衡换行后仍有孤字: {balanced}"
+    # 不能溢出栏宽
+    assert all(font.getlength(ln) <= 500 for ln in balanced), f"均衡换行溢出栏宽: {balanced}"
 
