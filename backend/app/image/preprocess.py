@@ -242,6 +242,28 @@ def remove_background(img: Image.Image) -> Image.Image:
     return img.convert("RGBA")
 
 
+def warmup_rembg() -> None:
+    """后台预热首个可用抠图模型的会话（幂等，失败静默）。
+
+    在生产这类内存/CPU 受限的机器上，ONNX 会话**首次**初始化可达分钟级
+    （实测 2 核 2GB 机器上 u2net 冷启动 ~165s，主要耗在内存紧张引起的 swap）。
+    若不预热，部署/重启后的**第一个**用户请求会独自承担这段耗时并几乎必然超时。
+    由 ``app.main.lifespan`` 在启动时放入后台线程调用，把这段成本挪到进程启动期；
+    预热结果写入 ``lru_cache``，后续请求直接命中。
+    """
+    for model in _REMBG_MODELS:
+        if _model_in_cooldown(model):
+            continue
+        try:
+            _rembg_session(model)
+            logger.info(f"rembg 预热完成：{model} 会话已就绪")
+            return
+        except Exception as exc:  # noqa: BLE001
+            _rembg_failed_at[model] = time.time()
+            logger.warning(f"rembg 预热 {model} 失败，尝试下一档：{exc}")
+    logger.warning("rembg 预热失败：全部模型不可用（首个请求将走降级路径）")
+
+
 @dataclass
 class QualityMetrics:
     blur_var: float = 0.0

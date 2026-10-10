@@ -61,6 +61,15 @@ async def lifespan(app: FastAPI):
         recover_orphan_tasks(db)
     finally:
         db.close()
+
+    # 后台预热抠图模型（不阻塞启动）：受限机器上 ONNX 会话首次初始化可达分钟级，
+    # 放到启动期完成，避免部署/重启后的第一个识别请求独自承担并超时。
+    import threading
+
+    from app.image.preprocess import warmup_rembg
+
+    threading.Thread(target=warmup_rembg, name="rembg-warmup", daemon=True).start()
+
     yield
     # 退出：等待在途任务收尾（不阻塞过久）
     from app.services import task_runner
