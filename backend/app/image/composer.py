@@ -250,10 +250,45 @@ def _region_luminance(canvas: Image.Image, box: tuple[int, int, int, int]) -> fl
     return 0.299 * r + 0.587 * g + 0.114 * b
 
 
+def _contrast_ratio(lum_a: float, lum_b: float) -> float:
+    """WCAG 对比度比值（1~21）。文字可读性经验门槛：≥4.5 良好，≥3.0 最低可接受。"""
+    def _lin(v: float) -> float:
+        v = v / 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    la, lb = _lin(lum_a), _lin(lum_b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
 def _text_color_for(canvas: Image.Image, region: tuple[int, int, int, int]) -> tuple[int, int, int]:
-    """按背景亮度自动选择文字颜色（深底浅字 / 浅底深字）。"""
+    """按背景亮度自动选择文字颜色（深底浅字 / 浅底深字）。
+
+    用**区域平均亮度**选深/浅色即可，但衬底是否必要由 `_needs_scrim` 单独判定——
+    均匀浅底配深字本就清晰，不需要再加衬底（加多了很脏）。
+    """
     lum = _region_luminance(canvas, region)
     return (245, 245, 245) if lum < 128 else (30, 30, 30)
+
+
+def _needs_scrim(canvas: Image.Image, region: tuple[int, int, int, int],
+                 text_color: tuple[int, int, int]) -> int:
+    """判断是否需要给文字加衬底以保证对比度。
+
+    旧实现只在"文字与主体相交"时加衬底，导致**白字压在浅色木纹/高光渐变上**
+    这类"不相交但对比极低"的情况完全不管——文案肉眼几乎不可见（线上任务 #3）。
+    改为按 WCAG 对比度判定：区域内**比对色低的那一端**（取区域亮度的 p10/p90 近似）
+    仍达不到 3.0 时，才需要衬底。返回 0=不需要，1=需要。
+    """
+    crop = canvas.convert("RGB").crop(region)
+    if crop.width < 2 or crop.height < 2:
+        return 0
+    small = crop.resize((max(2, min(32, crop.width)), max(2, min(32, crop.height))))
+    lum_t = 0.299 * text_color[0] + 0.587 * text_color[1] + 0.114 * text_color[2]
+    worst = 21.0
+    for r, g, b in small.getdata():
+        lum = 0.299 * r + 0.587 * g + 0.114 * b
+        worst = min(worst, _contrast_ratio(lum, lum_t))
+    return 1 if worst < 3.0 else 0
 
 
 def _pick_accent(design: dict[str, Any], text_color: tuple[int, int, int]) -> tuple[int, int, int] | None:
@@ -279,9 +314,13 @@ def _pick_accent(design: dict[str, Any], text_color: tuple[int, int, int]) -> tu
 
 
 def _band_color_for(canvas: Image.Image, region: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-    """文字衬底颜色：与背景亮度相反，半透明。"""
+    """文字衬底颜色：与背景亮度相反，半透明。
+
+    浅背景用**深色**衬底（保证深色字或反白字都够对比），深背景用**浅色**衬底。
+    透明度略提高（180/200）以避免"看着有衬底却仍读不清"。
+    """
     lum = _region_luminance(canvas, region)
-    return (255, 255, 255, 200) if lum < 128 else (20, 20, 20, 170)
+    return (255, 255, 255, 205) if lum < 128 else (18, 18, 20, 180)
 
 
 def _draw_text_band(
@@ -527,7 +566,7 @@ def _hero_text_layout(
         right = max(right, x + max((int(font_s.getlength(ln)) for ln in lines), default=0))
         y += len(lines) * int(font_s.size * 1.3)
         bar_h = max(3, int(h * 0.005 * s))
-        rule_w = int(w * 0.075)
+        rule_w = min(int(w * 0.075), max_w)
         items.append({"kind": "rule", "x": x, "y": y + int(h * 0.010 * s), "w": rule_w, "h": bar_h})
         right = max(right, x + rule_w)
         y += int(h * 0.010 * s) + bar_h
@@ -556,13 +595,16 @@ def _hero_text_layout(
 
     if texts["cta"]:
         cta_h = int(h * 0.065 * s)
-        cta_w = int(w * 0.26 * s)
+        # CTA 宽度必须夹到栏宽以内：固定比例 0.26w 在窄栏（侧栏约 0.16w）下会溢出栏宽，
+        # 让内容框（cw）算得比栏还宽 → 相交判定失效、文字越界（实测 cw=936 > 栏宽 320）。
+        cta_w = min(int(w * 0.26 * s), max_w)
         cy0 = y + int(h * 0.02 * s)
         items.append({"kind": "cta", "text": texts["cta"], "x": x, "y": cy0, "w": cta_w, "h": cta_h})
         right = max(right, x + cta_w)
         y = cy0 + cta_h
 
-    return y, items, right - x
+    # 内容宽度不得超过栏宽（单个超长英文单词/品牌行可能溢出），否则相交判定会失效
+    return y, items, min(right - x, max_w)
 
 
 def _shorten_chip(text: str, font: Any, max_w: int) -> str:
@@ -1130,6 +1172,7 @@ def _smart_fit_cover(
     img: Image.Image,
     size: tuple[int, int],
     text_side: str,
+    design: dict[str, Any] | None = None,
 ) -> Image.Image:
     """把生成图适配到画布，**优先保住文字侧留白**（整图重塑链路的关键一步）。
 
@@ -1142,7 +1185,7 @@ def _smart_fit_cover(
     """
     tw, th = size
     sw, sh = img.size
-    rect = _detect_subject_rect(img.convert("RGB"))
+    rect = _detect_subject_rect(img.convert("RGB"), design)
     if rect is None:
         return _fit_cover(img, size)
 
@@ -1178,12 +1221,60 @@ def _load_base_cover(
     image_bytes: bytes,
     size: tuple[int, int],
     text_side: str = "center",
+    design: dict[str, Any] | None = None,
 ) -> Image.Image:
-    """加载图生图结果并按 cover 方式适配画布（含留白感知智能裁剪）。"""
+    """加载图生图结果并按 cover 方式适配画布（含留白感知智能裁剪）。
+
+    当 AI 返回图与目标画布的**长宽比差异较大**（>6%）时，不再 cover 裁剪
+    （会切掉 AI 精心布置的构图/留白），改用"等比缩放 + 模糊延展补边"把画面
+    完整放进画布——保住构图的同时不出现黑边。
+    """
     img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    # 长宽比差异较大时，cover 裁剪会切掉 AI 已布置好的构图/留白 → 改用 contain 补边。
+    sw, sh = img.size
+    tw, th = size
+    if sw > 0 and sh > 0:
+        src_ratio = sw / sh
+        dst_ratio = tw / th
+        if abs(src_ratio - dst_ratio) / max(src_ratio, dst_ratio) > 0.06:
+            return _fit_contain(img, size)
     if text_side in {"left", "right"}:
-        return _smart_fit_cover(img, size, text_side)
+        return _smart_fit_cover(img, size, text_side, design)
     return _fit_cover(img, size)
+
+
+def _fit_contain(
+    img: Image.Image,
+    size: tuple[int, int],
+) -> Image.Image:
+    """等比缩放后**完整放入**画布，四周用原图放大模糊填充（不裁剪、不留黑边）。
+
+    用于 AI 返回图与目标长宽比不一致时，避免 cover 裁剪破坏已生成的构图。
+    """
+    tw, th = size
+    sw, sh = img.size
+    if sw <= 0 or sh <= 0:
+        return Image.new("RGBA", size, (0, 0, 0, 255))
+
+    scale = min(tw / sw, th / sh)
+    nw = max(1, int(sw * scale + 0.5))
+    nh = max(1, int(sh * scale + 0.5))
+    fitted = img.resize((nw, nh), Image.LANCZOS)
+
+    # 背景：原图放大铺满 + 高斯模糊，保证补边是画面的延伸而非突兀色块
+    bg_scale = max(tw / sw, th / sh)
+    bw = max(tw, int(sw * bg_scale + 0.5))
+    bh = max(th, int(sh * bg_scale + 0.5))
+    bg = img.resize((bw, bh), Image.LANCZOS)
+    bg = bg.crop(((bw - tw) // 2, (bh - th) // 2,
+                  (bw - tw) // 2 + tw, (bh - th) // 2 + th))
+    from PIL import ImageFilter
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=max(tw, th) * 0.02))
+
+    x = (tw - nw) // 2
+    y = (th - nh) // 2
+    bg.alpha_composite(fitted, (x, y))
+    return bg
 
 
 def _overlap_area(
@@ -1202,7 +1293,68 @@ def _overlap_area(
     return iw * ih if (iw > 0 and ih > 0) else 0
 
 
-def _detect_subject_rect(canvas: Image.Image) -> tuple[int, int, int, int] | None:
+def _prior_from_design(
+    w: int, h: int, design: dict[str, Any] | None
+) -> tuple[float, float, float, float]:
+    """由 LLM 给出的 `product_placement.position` + `text_area` 构造**方向性场景先验框**。
+
+    历史事故（任务 #3）：LLM 明确写了 `position="center-lower"`、`text_area="bottom"`，
+    但旧实现对任何图都套"画面正中 0.62×0.62"的先验，把主体框硬拉到纵向居中，
+    两侧可用的干净栏被算成"很窄"，于是文字被迫挤进顶部小角落。
+
+    现在：按 position 的关键词（left/right/top/bottom/center）把先验框**偏向对应方位**，
+    text_area 作为兜底（文字在哪侧，主体就先验偏向反侧）。position 缺失时才退回居中。
+    """
+    pos = ""
+    if design:
+        pp = design.get("product_placement")
+        if isinstance(pp, dict):
+            pos = str(pp.get("position") or "").lower()
+        if not pos:
+            pos = str(design.get("composition") or "").lower()
+    side = str((design or {}).get("text_area") or "").lower()
+
+    # 主体框基础占比（比旧 0.62 明显收窄）：整图叠加链路的文字只需"避开"主体，
+    # 框给太大反而把可用的干净区算没了（任务 #3 的文字被逼进角落就与此有关）。
+    bw = 0.50
+    bh = 0.50
+    cx, cy = 0.5, 0.5
+
+    if any(k in pos for k in ("left",)):
+        cx = 0.34
+    elif any(k in pos for k in ("right",)):
+        cx = 0.66
+    elif "center" in pos:
+        cx = 0.5
+
+    if "lower" in pos or "bottom" in pos:
+        cy = 0.64
+    elif "upper" in pos or "top" in pos:
+        cy = 0.36
+    elif "center" in pos:
+        cy = 0.5
+
+    # position 完全缺失时，用 text_area 反推
+    if not pos:
+        if side == "left":
+            cx = 0.68
+        elif side == "right":
+            cx = 0.32
+        elif side == "top":
+            cy = 0.62
+        elif side == "bottom":
+            cy = 0.38
+
+    x0 = (cx - bw / 2) * w
+    x1 = (cx + bw / 2) * w
+    y0 = (cy - bh / 2) * h
+    y1 = (cy + bh / 2) * h
+    return (x0, y0, x1, y1)
+
+
+def _detect_subject_rect(
+    canvas: Image.Image, design: dict[str, Any] | None = None
+) -> tuple[int, int, int, int] | None:
     """估计整图画面中"产品/人物主体"的外接框 (x0,y0,x1,y1)，供文字避让。
 
     ## 为什么不能只靠 rembg
@@ -1217,14 +1369,13 @@ def _detect_subject_rect(canvas: Image.Image) -> tuple[int, int, int, int] | Non
     但一旦画面下部被遮挡/有干扰，矩会整体偏移到上部道具上（实测偏移到挂衣杆，
     于是文字被排到耳机上）。**结论：单靠 rembg 无法在实景图里稳定指认"产品"。**
 
-    ## 现在的做法：场景先验 + α 能量的加权融合
+    ## 现在的做法：方向性场景先验 + α 能量的加权融合
 
-    这类场景图的构图有强先验——出图提示词要求"产品居中陈列，四周留氛围"，
-    所以主体必然靠近画面中心且占据相当面积。于是：
+    这类场景图的构图有强先验，而且 **LLM 已经把先验明写出来了**
+    （`product_placement.position` / `text_area`）。于是：
       1. 用 α 加权矩求"图像意义上的显著区"（对纯色/简单背景依然准确）；
-      2. 与**居中的场景先验框**（画面中央 0.62×0.62）做加权融合；
-      3. 融合权重偏向先验（0.65），避免被上部道具带偏。
-    这样既保留了对真实主体位置的感知（α 矩），又用构图先验兜住 rembg 的误判。
+      2. 与**按 position/text_area 定向的**场景先验框（见 `_prior_from_design`）融合；
+      3. 融合权重偏向先验（0.6），避免被上部道具带偏。
 
     **无法可靠估计时返回 None**（而不是"保守大框"）——大框会让任何版位都被判
     "文字压主体"，把干净版位误排到后面。调用方拿到 None 时按"主体位置未知"处理。
@@ -1238,9 +1389,7 @@ def _detect_subject_rect(canvas: Image.Image) -> tuple[int, int, int, int] | Non
         cutout = remove(canvas.convert("RGB"), session=session)
         alpha = np.asarray(cutout.convert("RGBA").split()[3]).astype(np.float32) / 255.0
 
-        # ---- 场景先验框：产品在场景图里必然居中陈列 ----
-        pc = 0.62  # 先验框占画幅比例
-        prior = ((w - w * pc) / 2, (h - h * pc) / 2, (w + w * pc) / 2, (h + h * pc) / 2)
+        prior = _prior_from_design(w, h, design)
 
         total = float(alpha.sum())
         if total <= 1.0:  # 全透明 → 没抠出任何东西，直接用先验
@@ -1258,8 +1407,8 @@ def _detect_subject_rect(canvas: Image.Image) -> tuple[int, int, int, int] | Non
         k = 1.2
         a_box = (xs - k * sx, ys - k * sy, xs + k * sx, ys + k * sy)
 
-        # ---- 与场景先验融合（权重偏向先验，抗道具干扰）----
-        wp = 0.65
+        # ---- 与定向场景先验融合（权重偏向先验，抗道具干扰）----
+        wp = 0.6
         x0 = wp * prior[0] + (1 - wp) * a_box[0]
         y0 = wp * prior[1] + (1 - wp) * a_box[1]
         x1 = wp * prior[2] + (1 - wp) * a_box[2]
@@ -1338,6 +1487,7 @@ def _tpl_hero_overlay(
         if cw_r:
             specs.append(("right", w - mx - cw_r, cw_r, my))
         specs += [
+            ("bottom", mx, wide_w, 0),
             ("bottom-left", mx, half, 0),
             ("bottom-right", w - mx - half, half, 0),
         ]
@@ -1346,6 +1496,22 @@ def _tpl_hero_overlay(
     pref = str(design.get("text_area") or "top").lower()
     order = {"top": 0, "left": 1, "right": 2, "bottom": 3,
              "top-left": 4, "top-right": 5, "bottom-left": 6, "bottom-right": 7}
+
+    # ── text_area 硬约束（P0 修复）─────────────────────────────────────────
+    # 历史事故：LLM 明确给出 text_area="bottom"、scene_prompt 也写明"留白在下方"，
+    # 但渲染器只把 text_area 当作"同分排序偏好"（sort_key 第 7 档），结果被"贴顶窄栏
+    # 恰好干净"抢走 → 文字排到左上角、压在浅色木纹上，与提示词完全矛盾。
+    #
+    # 现在：把 LLM 指定的方位升级为**第一优先硬约束**——先只在"该侧"的版位里挑，
+    # 只有该侧**完全放不下**（连最小字号都不干净）时才放开到其他侧，并在设计里
+    # 记录降级，便于排查。
+    _SIDE_ZONES: dict[str, set[str]] = {
+        "top": {"top", "top-left", "top-right"},
+        "bottom": {"bottom-left", "bottom-right", "bottom"},
+        "left": {"left", "top-left", "bottom-left"},
+        "right": {"right", "top-right", "bottom-right"},
+    }
+    pref_zones = _SIDE_ZONES.get(pref, set(order.keys()))
 
     # 字号缩放档位：从大往小试，取"不压主体"里最大的那档。
     # 为什么要有 >1.0 的档位：基准字号（标题 h*0.075 等）在 2000px 画布上偏小，
@@ -1380,31 +1546,60 @@ def _tpl_hero_overlay(
     # （贴顶、贴主体上沿、垂直居中、贴底），配合字号档形成 (纵坐标 × 字号) 二维搜索，
     # 显著扩大"干净且字号大"候选的命中率。
     candidates: list[dict[str, Any]] = []
-    for level in (0, 1, 2):
-        t = _trim(level)
-        level_cands: list[dict[str, Any]] = []
-        for zone, tx, tw, ty in _zone_specs():
-            if tw < int(w * 0.16):      # 窄于可读下限，放弃
-                continue
-            for sc in SCALES:
-                th, items, cw = _hero_text_layout(canvas, design, t, tx, tw, scale=sc)
-                # 候选纵坐标：贴顶 / 贴主体上沿 / 垂直居中 / 贴底（去重，限制在画布内）
-                ys = {ty if ty else h - my - th,
-                      h - my - th,
-                      max(my, (my + (h - my) - th) // 2)}
-                if subject_rect is not None and subject_rect[1] - gap - th >= my:
-                    ys.add(subject_rect[1] - gap - th)   # 贴着主体上沿排
-                for yy in sorted(ys):
-                    if yy < my or yy + th > h - int(h * 0.02):
-                        continue
-                    trect = (tx, yy, tx + cw, yy + th)
-                    if _overlap_area(trect, subject_rect) <= 0:
-                        level_cands.append({"zone": zone, "x": tx, "y": yy, "w": tw, "h": th,
-                                            "cw": cw, "items": items, "scale": sc,
-                                            "level": level, "overlap": 0})
-        if level_cands:
-            candidates = level_cands
-            break   # 该内容档已有干净方案，不再放宽内容
+    # 主体下沿基准（bottom 版位把文字排在主体下沿之下）——无主体框时为 None
+    subj_bottom_anchor = (subject_rect[3] + gap) if subject_rect is not None else None
+    # 两轮：先只在 text_area 指定侧的版位里找；找不到干净方案才放开到全部版位。
+    for zone_filter in (pref_zones, None):
+        candidates = []
+        for level in (0, 1, 2):
+            t = _trim(level)
+            level_cands: list[dict[str, Any]] = []
+            for zone, tx, tw, ty in _zone_specs():
+                if zone_filter is not None and zone not in zone_filter:
+                    continue
+                if tw < int(w * 0.16):      # 窄于可读下限，放弃
+                    continue
+                for sc in SCALES:
+                    th, items, cw = _hero_text_layout(canvas, design, t, tx, tw, scale=sc)
+                    # 候选纵坐标：由**版位方向**决定锚点集合。
+                    # ⚠️ 不能所有版位共用同一组锚点：bottom 版位若也允许"贴主体上沿"
+                    # 或"垂直居中"锚点，会把文字送到画面上半部——明明要求排底部，
+                    # 结果排到了顶部（P0 text_area 修复过程中实测到的自相矛盾）。
+                    bottom_zone = zone.startswith("bottom")
+                    top_zone = zone.startswith("top")
+                    if bottom_zone:
+                        # 只考虑下半部：贴底 / 贴主体下沿之下 / 垂直居中偏下
+                        ys = {h - my - th,
+                              subj_bottom_anchor - th if subj_bottom_anchor is not None else -1,
+                              max(my, (h - th) // 2)}
+                    elif top_zone:
+                        # 只考虑上半部：贴顶 / 贴主体上沿之上 / 垂直居中偏上
+                        ys = {my,
+                              (subject_rect[1] - gap - th) if subject_rect is not None else -1,
+                              max(my, (h - th) // 4)}
+                    else:
+                        # 左右侧栏：纵向自由，取贴顶/居中/贴底/贴主体上沿
+                        ys = {my, h - my - th, max(my, (h - th) // 2)}
+                        if subject_rect is not None:
+                            ys.add(subject_rect[1] - gap - th)
+                    ys = {v for v in ys if v >= 0}
+                    for yy in sorted(ys):
+                        if yy < my or yy + th > h - int(h * 0.02):
+                            continue
+                        trect = (tx, yy, tx + cw, yy + th)
+                        if _overlap_area(trect, subject_rect) <= 0:
+                            level_cands.append({"zone": zone, "x": tx, "y": yy, "w": tw, "h": th,
+                                                "cw": cw, "items": items, "scale": sc,
+                                                "level": level, "overlap": 0})
+            if level_cands:
+                candidates = level_cands
+                break   # 该内容档已有干净方案，不再放宽内容
+        if candidates:
+            # 记录 text_area 约束是否被满足（供版式调试）
+            design["_text_area_honored"] = zone_filter is not None
+            break
+    else:
+        design["_text_area_honored"] = False
 
     if not candidates:
         # 实在挤不下（主体几乎铺满画布）：退到"最小字号 + 最简内容 + 重叠最小"的方案。
@@ -1492,17 +1687,27 @@ def _tpl_hero_overlay(
     region = (max(0, tx0 - pad), max(0, ty0 - pad), min(w, tx1 + pad), min(h, ty1 + pad))
     trect = (tx0, ty0, tx1, ty1)
     overlap = _overlap_area(trect, subject_rect)
+
+    # 先定文字色（按区域平均亮度选深/浅），再判**是否需要衬底**：
+    # 衬底不再只服务于"压主体"，而是服务于"对比度不足"——白字压在浅色木纹/高光上
+    # 同样需要衬底（线上任务 #3 的事故）。仅当对比度达标的均匀背景才不加衬底。
+    tc = _text_color_for(canvas, region)
+    scrim = _needs_scrim(canvas, region, tc) if overlap <= 0 else 1
+    if scrim:
+        # 用**定向渐变蒙版**（贴边羽化）而不是圆角色块：更接近商业海报的整面压暗/提亮，
+        # 也避免"画面中央突然出现一个灰框"的廉价感。
+        _draw_directional_scrim(canvas, str(best.get("zone") or "top"), trect)
+        design["_text_scrim"] = True
     if overlap > 0:
-        # 文字区与主体 unavoidable 相交：加半透明衬底（颜色与背景亮度相反）保证可读
-        _draw_text_band(canvas, list(region), radius=max(12, int(min(w, h) * 0.025)),
-                        fill=_band_color_for(canvas, region))
         # 记录相交程度（版式调试 / 回归比对用；轻微擦边不拦）
         design["_text_subject_overlap"] = overlap
         if subject_rect is not None:
             subj_area = max(1, (subject_rect[2] - subject_rect[0]) * (subject_rect[3] - subject_rect[1]))
             design["_text_subject_overlap_ratio"] = round(overlap / subj_area, 4)
 
-    tc = _text_color_for(canvas, region)
+    # 衬底已经改变了文字落笔处的底色 → 在**衬底之后**重新取色，避免"照着旧底色选字色"
+    if scrim:
+        tc = _text_color_for(canvas, region)
     accent = _pick_accent(design, tc)
     _hero_draw(canvas, best["items"], ty0, tc, accent)
 
@@ -1672,6 +1877,7 @@ def _draw_directional_scrim(
 
     关键：蒙版必须在文字块范围内保持接近满强度，否则低处的文字会因为
     衰减过早而糊在背景里（第一版按整幅宽度线性衰减，导致第三行卖点几乎不可见）。
+    支持 8 个版位（top/bottom/left/right + 四个角落），角落版位沿对应两轴羽化。
     """
     w, h = canvas.size
     x0, y0, x1, y1 = (max(0, rect[0]), max(0, rect[1]), min(w, rect[2]), min(h, rect[3]))
@@ -1682,58 +1888,57 @@ def _draw_directional_scrim(
 
     pad = int(min(w, h) * 0.035)          # 蒙版相对文字块的外扩
     feather = int(min(w, h) * 0.10)       # 外侧羽化带宽度
+    steps = 64
 
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
 
-    if zone in ("left", "right"):
-        # 实心覆盖区（含 padding，不含羽化）
-        if zone == "left":
-            core = (0, 0, x1 + pad, h)
-        else:
-            core = (x0 - pad, 0, w, h)
-        od.rectangle(list(core), fill=(*base, strength))
-        # 外侧羽化：从实心区边缘向外 linear 衰减
-        steps = 64
-        if zone == "left":
-            for i in range(steps):
-                sx = core[2] + int(feather * i / steps)
-                alpha = int(strength * (1 - i / steps))
-                od.rectangle([sx, 0, sx + int(feather / steps) + 1, h], fill=(*base, alpha))
-        else:
-            for i in range(steps):
-                sx = core[0] - int(feather * (i + 1) / steps)
-                alpha = int(strength * (1 - i / steps))
-                od.rectangle([sx, 0, sx + int(feather / steps) + 1, h], fill=(*base, alpha))
-        # 内侧（画面反向）也做一次短羽化，避免左右两侧出现硬边
-        inner_feather = int(min(w, h) * 0.06)
-        if zone == "left":
-            for i in range(steps):
-                sx = int(inner_feather * i / steps)
-                alpha = int(strength * (i / steps))
-                od.rectangle([sx, 0, sx + int(inner_feather / steps) + 1, h], fill=(*base, alpha))
-        else:
-            for i in range(steps):
-                sx = w - int(inner_feather * i / steps)
-                alpha = int(strength * (i / steps))
-                od.rectangle([sx - int(inner_feather / steps) - 1, 0, sx, h], fill=(*base, alpha))
-    else:
-        if zone == "top":
-            core = (0, 0, w, y1 + pad)
-        else:
-            core = (0, y0 - pad, w, h)
-        od.rectangle(list(core), fill=(*base, strength))
-        steps = 64
-        if zone == "top":
-            for i in range(steps):
-                sy = core[3] + int(feather * i / steps)
-                alpha = int(strength * (1 - i / steps))
-                od.rectangle([0, sy, w, sy + int(feather / steps) + 1], fill=(*base, alpha))
-        else:
-            for i in range(steps):
-                sy = core[1] - int(feather * (i + 1) / steps)
-                alpha = int(strength * (1 - i / steps))
-                od.rectangle([0, sy, w, sy + int(feather / steps) + 1], fill=(*base, alpha))
+    def _band(start: int, end: int, vertical: bool, alpha_from: int, alpha_to: int) -> None:
+        """沿 x（vertical=False）或 y（vertical=True）画一段线性透明度渐变条。"""
+        span = max(1, end - start)
+        for i in range(steps):
+            t = i / steps
+            a = int(alpha_from + (alpha_to - alpha_from) * t)
+            pos = start + int(span * t)
+            nxt = start + int(span * (t + 1 / steps)) + 1
+            if vertical:
+                od.rectangle([0, pos, w, nxt], fill=(*base, a))
+            else:
+                od.rectangle([pos, 0, nxt, h], fill=(*base, a))
+
+    left = zone in ("left", "top-left", "bottom-left")
+    right = zone in ("right", "top-right", "bottom-right")
+    top = zone in ("top", "top-left", "top-right")
+    bottom = zone in ("bottom", "bottom-left", "bottom-right")
+
+    # 实心核心区（含 padding，不含羽化）
+    cx0 = 0 if left else max(0, x0 - pad)
+    cx1 = w if right else min(w, x1 + pad)
+    cy0 = 0 if top else max(0, y0 - pad)
+    cy1 = h if bottom else min(h, y1 + pad)
+    od.rectangle([cx0, cy0, cx1, cy1], fill=(*base, strength))
+
+    # 外侧羽化：从核心区边缘向外线性衰减
+    if left:
+        _band(cx1, min(w, cx1 + feather), False, strength, 0)
+    if right:
+        _band(max(0, cx0 - feather), cx0, False, 0, strength)
+    if top:
+        _band(cy1, min(h, cy1 + feather), True, strength, 0)
+    if bottom:
+        _band(max(0, cy0 - feather), cy0, True, 0, strength)
+
+    # 内侧（画面反向）也做一次短羽化，避免出现硬边
+    inner = int(min(w, h) * 0.06)
+    if left:
+        _band(0, min(w, inner), False, 0, strength)
+    if right:
+        _band(max(0, w - inner), w, False, strength, 0)
+    if top:
+        _band(0, min(h, inner), True, 0, strength)
+    if bottom:
+        _band(max(0, h - inner), h, True, strength, 0)
+
     canvas.alpha_composite(overlay)
 
 
@@ -1759,7 +1964,7 @@ def compose_ad_from_image(
     _side = str(design.get("text_area") or "").lower()
     if _side not in {"left", "right"}:
         _side = "center"
-    canvas = _load_base_cover(base_image_bytes, size, text_side=_side)
+    canvas = _load_base_cover(base_image_bytes, size, text_side=_side, design=design)
     design["_compose_mode"] = "imagegen"
 
     texts = {
@@ -1770,7 +1975,7 @@ def compose_ad_from_image(
         "promo": design.get("promo_badge", "SALE"),
     }
 
-    subject_rect = _detect_subject_rect(canvas)
+    subject_rect = _detect_subject_rect(canvas, design)
     if subject_rect is not None:
         design["_subject_box"] = [
             subject_rect[0], subject_rect[1],

@@ -29,6 +29,7 @@ from app.agents.tools import (
     image_edit,
     image_generate,
     layout_compose,
+    poster_compose,
     rag_search,
 )
 from app.core.exceptions import NotFoundError
@@ -404,6 +405,18 @@ def prompt_gen_node(state: AgentState) -> dict[str, Any]:
             result["text_area"] = "left"
     else:
         result.setdefault("text_area", layout.get("text_area") or "top")
+    # 海报模式：默认开启（电商宣传海报是主目标）。LLM 显式给 false 时才走单图链路。
+    if result.get("poster_mode") is None:
+        result["poster_mode"] = True
+    else:
+        result["poster_mode"] = bool(result.get("poster_mode"))
+    # 海报卖点：标题|一行说明。缺失时由核心卖点兜底（渲染端还会再兜一层）。
+    if not result.get("poster_bullets"):
+        result["poster_bullets"] = [
+            str(p.get("point") or "").strip()
+            for p in core_points
+            if isinstance(p, dict) and str(p.get("point") or "").strip()
+        ][:4]
     return {"design": result}
 
 
@@ -568,6 +581,112 @@ def _imagegen_instruction(product: dict[str, Any], design: dict[str, Any]) -> st
     )
 
 
+def _detail_prompts(product: dict[str, Any], design: dict[str, Any]) -> list[tuple[str, str]]:
+    """为"细节四格"生成 4 组 (标题, 出图提示词)。
+
+    标题取自卖点（`标题|说明` 的标题段），最多 4 个；不足 4 个时用通用细节角度补齐
+    （外观/材质/做工/配件），保证细节带不空。出图提示词描述该卖点对应的**产品特写**。
+    """
+    name = str(product.get("name") or product.get("category") or "the product").strip()
+    color = str(product.get("color") or "").strip()
+    material = str(product.get("material") or "").strip()
+    subject = " ".join(p for p in [color, material, name] if p).strip()
+
+    bullets = [str(b).strip() for b in (design.get("_bullets") or []) if str(b).strip()]
+    titles = [b.split("|", 1)[0].strip() for b in bullets][:4]
+    fallbacks = ["Premium Finish", "Fine Craftsmanship", "Built to Last", "In the Box"]
+    while len(titles) < 4:
+        titles.append(fallbacks[len(titles)])
+
+    angles = [
+        "extreme close-up macro shot focusing on the surface material and texture",
+        "close-up detail shot of the fine construction and edges",
+        "close-up shot highlighting the durable build quality",
+        "close-up of the product accessories and connectors",
+    ]
+    out: list[tuple[str, str]] = []
+    for i in range(4):
+        p = (
+            f"Professional e-commerce product detail photography: extreme close-up of a "
+            f"{subject}, {angles[i]}, clean neutral light-gray seamless studio backdrop, "
+            f"soft even studio lighting, sharp focus, ultra detailed, high resolution, "
+            f"premium commercial catalog style, realistic material rendering, no text, no watermark"
+        )
+        out.append((titles[i], p))
+    return out
+
+
+def _render_poster(
+    scene_bytes: bytes,
+    design: dict[str, Any],
+    copy0: dict[str, Any],
+    product: dict[str, Any],
+    size_preset: str,
+    emit: Callable[[int, str], None],
+) -> dict[str, Any]:
+    """海报模式：生成细节特写图 + 合成多分区海报，返回节点结果 dict。
+
+    细节图任何一张失败都跳过（细节带可少几格），不影响主视觉。
+    """
+    details: list[bytes] = []
+    detail_titles: list[str] = []
+    try:
+        specs = _detail_prompts(product, design)
+        neg = "people, person, hand, text, letters, watermark, logo, blurry, low quality"
+        # 进度区间 89→97，四张均分
+        for i, (title, prompt) in enumerate(specs):
+            try:
+                b = _generate_with_progress(
+                    lambda p=prompt: image_generate(p, "1:1", neg),
+                    89 + int(i * 2),
+                    89 + int((i + 1) * 2),
+                )
+                details.append(b)
+                detail_titles.append(title)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"细节特写图 {i} 生成失败，跳过: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"细节特写图规划失败，细节带留空: {exc}")
+
+    emit(97, "image_compose")
+    hero_bullets = copy0.get("bullets", []) or []
+    # 卖点网格用 标题|说明；细节标题复用卖点标题，保证两处措辞一致
+    grid_bullets = list(hero_bullets)[:4]
+    scenes = [str(s).strip() for s in (product.get("scenes") or []) if str(s).strip()][:4]
+
+    image_url = poster_compose(
+        scene_bytes,
+        design,
+        copy0.get("headline", ""),
+        copy0.get("subheadline", ""),
+        copy0.get("cta", ""),
+        size_preset,
+        bullets=grid_bullets,
+        detail_image_bytes=details or None,
+        scenes=scenes or None,
+        tagline=(
+            f"{(design.get('_brand') or '').strip()}, "
+            f"{(copy0.get('headline') or '').strip()[:32]}"
+        ).strip(", "),
+    )
+    # 标记合成模式：海报主视觉来自整图重塑（无贴图源），供下游/测试判定
+    design["_compose_mode"] = "imagegen"
+    design["_poster_sections"] = {
+        "grid": bool(grid_bullets),
+        "details": len(details),
+        "footer": bool(scenes),
+    }
+    return {
+        "images": [{
+            "image_url": image_url,
+            "template_id": "poster",
+            "size": size_preset,
+            "scheme": design,
+        }],
+        "design": design,
+    }
+
+
 def image_compose_node(state: AgentState) -> dict[str, Any]:
     """节点 7：图片生成 —— 生成背景主视觉并与真实产品合成（保证产品不变形）。
 
@@ -591,6 +710,12 @@ def image_compose_node(state: AgentState) -> dict[str, Any]:
         str(s).strip() for s in (product.get("scenes") or []) if str(s).strip()
     ][:3]
     design["_icon"] = product_icon(product)
+    # 海报模式的卖点（标题|说明）在此缓存，供细节图规划读取（避免在 _render_poster
+    # 里再回头解 copy）
+    design["_bullets"] = list(copy0.get("bullets", []) or [])
+    # 海报模式开关：由策划/提示词节点写入 design["_poster"]；未开启则走单图链路
+    if "_poster" not in design:
+        design["_poster"] = bool(design.get("poster_mode"))
 
     # 通道 A（最高优先）：整图重塑 —— 让 AI 直接生成"商品已场景化陈列"的完整广告画面。
     # 这是对齐商业大模型效果的关键：商品与场景/光影/材质浑然一体，而不是"空背景 + 贴产品"。
@@ -606,6 +731,15 @@ def image_compose_node(state: AgentState) -> dict[str, Any]:
                 89,
             )
             emit(89, "image_compose")
+            # 海报模式（多分区）：主视觉 + 卖点网格 + 细节四格 + 底部场景条。
+            # 由 design["_poster"] 开关控制（提示词/策划节点可开启）。任何一步失败
+            # 都退回"单图叠加"链路，保证不会因海报素材缺失而整体失败。
+            if design.get("_poster"):
+                try:
+                    return _render_poster(
+                        scene_bytes, design, copy0, product, size_preset, emit)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"海报模式合成失败，退回单图叠加: {exc}")
             image_url = compose_from_generated(
                 scene_bytes,
                 design,
@@ -627,6 +761,7 @@ def image_compose_node(state: AgentState) -> dict[str, Any]:
             }
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"整图重塑出图失败，降级为指令编辑: {exc}")
+
 
     # 通道 A2（兜底）：指令编辑 —— 基于原图做图生图（穿戴类，原图可用时）
     # 模特实拍时人与服装/手机遮挡粘连，抠图难以干净分离，改为基于原图做指令编辑，

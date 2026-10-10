@@ -73,9 +73,10 @@ def _make_copy(version_no: int, style_variant: str, headline: str) -> dict:
         "headline": headline,
         "subheadline": "Wireless earbuds with Active Noise Cancellation and 30-hour battery life.",
         "bullets": [
-            "Active Noise Cancellation blocks distractions",
-            "30-hour battery keeps you going all week",
-            "IPX5 water resistance for workouts and rain",
+            "Active Noise Cancellation|Blocks out the world so you hear only your music",
+            "30-Hour Battery|All-day listening with fast USB-C charging",
+            "IPX5 Waterproof|Sweat and rain resistant for every workout",
+            "Bluetooth 5.3|Stable, low-latency wireless connection",
         ],
         "cta": "Shop Now",
         "platform_adaptations": {

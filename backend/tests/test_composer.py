@@ -160,3 +160,122 @@ def test_balanced_wrap_removes_orphan_without_shrinking():
     # 不能溢出栏宽
     assert all(font.getlength(ln) <= 500 for ln in balanced), f"均衡换行溢出栏宽: {balanced}"
 
+
+# ---------- text_area 硬约束（P0 修复）----------
+# 线上事故（任务 #3）：LLM 给出 text_area="bottom" 且 scene_prompt 明写"留白在下方"，
+# 但渲染器把 text_area 只当同分排序偏好，被"贴顶窄栏恰好干净"抢走 → 文案排到左上角、
+# 压在浅色木纹上，既与提示词矛盾又几乎不可见。现改为：优先只在指定侧选版位。
+
+def test_overlay_honors_text_area_bottom_when_space_exists():
+    """主体偏上居中、下方有大片留白、text_area=bottom 时，文字必须落在下半部。"""
+    subject = (600, 150, 1400, 900)          # 主体在上半部
+    design, _ = _overlay((2000, 2000), subject, text_area="bottom")
+    box = design["_text_box"]
+    cy = (box[1] + box[3]) / 2
+    assert cy >= 1000, f"text_area=bottom 未生效，文字中心 y={cy:.0f} 落在上半部"
+    assert design.get("_text_area_honored") is True
+
+
+def test_overlay_honors_text_area_top_when_space_exists():
+    """主体偏下、上方留白、text_area=top 时，文字必须落在上半部。"""
+    subject = (600, 1100, 1400, 1850)
+    design, _ = _overlay((2000, 2000), subject, text_area="top")
+    box = design["_text_box"]
+    cy = (box[1] + box[3]) / 2
+    assert cy <= 1000, f"text_area=top 未生效，文字中心 y={cy:.0f} 落在下半部"
+
+
+def test_overlay_still_avoids_subject_under_text_area_constraint():
+    """text_area 约束不能让文字压主体：指定侧放不下时应降级到其他侧而非硬塞。"""
+    subject = (300, 1000, 1700, 1900)        # 主体占据下半部
+    design, _ = _overlay((2000, 2000), subject, text_area="bottom")
+    box = design["_text_box"]
+    assert not composer._rects_hit(tuple(box), subject), "为满足 text_area 硬塞导致压主体"
+
+
+# ---------- 出图尺寸保持长宽比（P0 修复）----------
+# 线上事故：_wanx_size 把 4:5(1080×1350) 塌缩成 720*1280(0.5625)，AI 按错误比例作画，
+# 构图与留白位置全被破坏 → 出图裁剪后"留白不在该在的位置"。
+
+def test_wanx_size_preserves_aspect_ratio():
+    from app.image.generator import _wanx_size, resolve_size
+    for name in ("1:1", "4:5", "9:16", "16:9", "amazon"):
+        w, h = resolve_size(name)
+        out = _wanx_size(w, h)
+        ow, oh = (int(x) for x in out.split("*"))
+        want, got = w / h, ow / oh
+        assert abs(want - got) / want < 0.01, f"{name} 长宽比失真: {out} ({got:.3f} vs {want:.3f})"
+        assert 512 <= ow <= 1440 and 512 <= oh <= 1440, f"{name} 尺寸越界: {out}"
+
+
+def test_load_base_cover_letterboxes_on_ratio_mismatch():
+    """AI 返回图与目标长宽比差异大时，应 contain 补边而非 cover 裁剪（保住构图）。"""
+    src = Image.new("RGBA", (720, 1280), (200, 120, 60, 255))   # 0.5625
+    buf = io.BytesIO()
+    src.save(buf, format="PNG")
+    out = composer._load_base_cover(buf.getvalue(), (1080, 1350))  # 目标 0.80
+    assert out.size == (1080, 1350)
+
+
+# ---------- 文字对比度（P1 修复）----------
+# 线上事故（任务 #3）：白字压在浅色木纹/高光上，肉眼几乎不可见。旧实现只在
+# "文字与主体相交"时加衬底，对"不相交但对比度极低"的情况完全不处理。
+
+def test_scrim_added_when_text_on_low_contrast_background():
+    """白字落在浅色背景（无主体相交）时，必须加衬底保证对比度。"""
+    canvas = Image.new("RGBA", (2000, 2000), (196, 168, 124, 255))   # 浅色木纹
+    ImageDraw.Draw(canvas).rectangle((900, 900, 1700, 1700), fill=(60, 55, 50, 255))
+    texts = {"headline": "Work Comfortable, Work Smart", "subheadline": "Wired USB mouse",
+             "cta": "Shop Now", "bullets": ["Ergonomic", "USB plug"], "promo": "SALE"}
+    design = {"_brand": "X", "_tag": "MOUSE", "_icon": "check",
+              "palette": ["#3b3b3b", "#e8e8e8"], "text_area": "top"}
+    composer._tpl_hero_overlay(canvas, design, texts, (900, 900, 1700, 1700))
+    assert design.get("_text_scrim") is True, "浅底上未加衬底，文字会看不清"
+    # 衬底后文字色应与衬底形成足够对比
+    box = design["_text_box"]
+    reg = (box[0] - 6, box[1] - 6, box[2] + 6, box[3] + 6)
+    tc = composer._text_color_for(canvas, reg)
+    lum_t = 0.299 * tc[0] + 0.587 * tc[1] + 0.114 * tc[2]
+    assert composer._contrast_ratio(composer._region_luminance(canvas, reg), lum_t) >= 3.0
+
+
+def test_needs_scrim_false_on_uniform_dark_background():
+    """均匀深色背景上白字本身对比就够，不应加多余衬底。"""
+    canvas = Image.new("RGBA", (400, 200), (24, 26, 32, 255))
+    assert composer._needs_scrim(canvas, (0, 0, 400, 200), (245, 245, 245)) == 0
+
+
+def test_directional_scrim_supports_corner_zones():
+    """定向蒙版需支持角落版位（top-left 等）而不报错、且真的改变画面。"""
+    canvas = Image.new("RGBA", (1000, 1000), (230, 230, 230, 255))
+    before = canvas.convert("RGB").getpixel((50, 50))
+    composer._draw_directional_scrim(canvas, "top-left", (40, 40, 600, 300))
+    after = canvas.convert("RGB").getpixel((50, 50))
+    assert after != before, "角落蒙版未生效"
+
+
+# ---------- 方向性主体先验（P1 修复）----------
+# 线上事故（任务 #3）：LLM 给出 position="center-lower"，旧实现却套"居中 0.62×0.62"
+# 的先验，把主体框拉到纵向居中，两侧干净栏被算得很窄 → 文案挤进顶部小角落。
+
+def test_prior_shifts_down_for_center_lower_product():
+    pt = composer._prior_from_design(2000, 2000, {"product_placement": {"position": "center-lower"}})
+    py = (pt[1] + pt[3]) / 2
+    assert py > 1200, f"center-lower 先验未下移: 中心 y={py:.0f}"
+
+
+def test_prior_shifts_left_for_right_position():
+    pt = composer._prior_from_design(2000, 2000, {"product_placement": {"position": "right"}})
+    px = (pt[0] + pt[2]) / 2
+    assert px > 1200, f"right 先验未右移: 中心 x={px:.0f}"
+
+
+def test_prior_uses_text_area_when_position_missing():
+    """position 缺失时，text_area=bottom 应让主体先验偏上（给底部文字让位）。"""
+    pt = composer._prior_from_design(2000, 2000, {"text_area": "bottom"})
+    py = (pt[1] + pt[3]) / 2
+    assert py < 1000, f"text_area=bottom 时主体先验未上移: 中心 y={py:.0f}"
+
+
+
+

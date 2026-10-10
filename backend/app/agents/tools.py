@@ -160,3 +160,39 @@ def layout_compose(
         size_preset,
         bullets=bullets,
     )
+
+
+def poster_compose(
+    hero_image_bytes: bytes,
+    design: dict[str, Any],
+    headline: str,
+    subheadline: str,
+    cta: str,
+    size_preset: str,
+    bullets: list[str] | None = None,
+    detail_image_bytes: list[bytes] | None = None,
+    scenes: list[str] | None = None,
+    tagline: str = "",
+) -> str:
+    """多分区海报合成：主视觉 + 卖点网格 + 细节四格 + 底部条，返回图片 URL。"""
+    from app.image.poster import compose_poster
+
+    img = compose_poster(
+        hero_image_bytes,
+        design,
+        headline,
+        subheadline,
+        cta,
+        size_preset,
+        bullets=bullets,
+        detail_image_bytes=detail_image_bytes,
+        scenes=scenes,
+        tagline=tagline,
+    )
+    import io as _io
+
+    from app.services.storage import storage
+
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    return storage.save_bytes(buf.getvalue(), "poster.png")

@@ -93,9 +93,17 @@ def test_full_pipeline_and_outputs(client):
     # ⑦图片生成：产出图片与主体几何
     image = final["images"][0]
     assert image["image_url"].startswith("/files/")
-    # 整图重塑/图生图模式下主体是"生成出来的"：没有贴图源尺寸（等比校验自动跳过），
+    # 海报模式（默认开启）：主视觉整图重塑 + 多分区排版，不写贴图源尺寸。
+    if design.get("_poster"):
+        assert image["template_id"] == "poster"
+        assert design.get("_compose_mode") == "imagegen"
+        assert not design.get("_subject_src"), "生成模式不应写入贴图源尺寸"
+        sections = design.get("_poster_sections") or {}
+        assert sections, "海报模式应记录分区信息"
+        assert sections.get("grid") is True, "有卖点时应渲染卖点网格"
+    # 单图链路：整图重塑模式下主体是"生成出来的"（无贴图源尺寸），
     # 且主体框仅在 rembg 估计**可靠**时才写入（不可靠时不写，避免误报"文字压主体"）。
-    if design.get("_compose_mode") == "imagegen":
+    elif design.get("_compose_mode") == "imagegen":
         assert not design.get("_subject_src"), "生成模式不应写入贴图源尺寸"
         assert len(design.get("_subject_box", [])) in (0, 4)
     else:

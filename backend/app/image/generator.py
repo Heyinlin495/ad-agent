@@ -94,13 +94,39 @@ def _generate_openai(prompt: str, size: tuple[int, int]) -> bytes:
     return base64.b64decode(b64)
 
 
+# 万相 2.1/2.2 系列：宽高均可取 [512, 1440]，且**支持任意长宽比**（非固定枚举）。
+# 因此可以按目标画布的长宽比**等比**请求，而不是塌缩到 1024² / 1280×720 / 720×1280
+# 三档——后者会把 4:5(0.80) 变成 720×1280(0.5625)，AI 按错误比例作画，构图与留白
+# 位置全被改变，是"广告图不成海报"的主因。
+_WANX_MIN = 512
+_WANX_MAX = 1440
+
+
 def _wanx_size(w: int, h: int) -> str:
-    """将目标尺寸映射为通义万相支持的尺寸。"""
-    if w == h:
+    """将目标尺寸映射为通义万相支持的尺寸，**保持长宽比**。
+
+    做法：以最长边贴到 _WANX_MAX(1440) 为基准等比缩放，再把两边夹到
+    [_WANX_MIN, _WANX_MAX]，最后微调使总像素与长宽比都保持在合理范围。
+    这样 4:5 → 1152×1440、9:16 → 810×1440、16:9 → 1440×810、1:1 → 1440×1440，
+    长宽比与原画布一致，AI 的构图与留白位置不会再被比例错误破坏。
+    """
+    if w <= 0 or h <= 0:
         return "1024*1024"
-    if w > h:
-        return "1280*720"
-    return "720*1280"
+
+    ratio = w / h
+    if ratio >= 1:  # 横版或正方：宽为长边
+        nw = _WANX_MAX
+        nh = int(round(_WANX_MAX / ratio))
+    else:           # 竖版：高为长边
+        nh = _WANX_MAX
+        nw = int(round(_WANX_MAX * ratio))
+
+    nw = max(_WANX_MIN, min(_WANX_MAX, nw))
+    nh = max(_WANX_MIN, min(_WANX_MAX, nh))
+    # 万相按 8 像素对齐更稳（非强制，但可避免个别尺寸被拒）
+    nw -= nw % 8
+    nh -= nh % 8
+    return f"{nw}*{nh}"
 
 
 def _generate_dashscope(

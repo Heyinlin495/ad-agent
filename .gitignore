@@ -34,3 +34,6 @@ node_modules/
 Thumbs.db
 .idea/
 .vscode/
+
+# 本地合成预览产物
+outputs/

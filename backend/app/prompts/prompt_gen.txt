@@ -117,6 +117,32 @@
     干扰文字可读性；深背景配浅字、浅背景配深字。
 
 ==========================================================
+# 三·五、海报化版式（电商宣传海报，poster_mode）
+==========================================================
+本系统最终产出的是**电商平台的商品宣传海报**（如淘宝主图/亚马逊 A+/独立站 banner），
+不是"一张产品实拍图 + 几行字"。当 poster_mode=true 时，合成器会把画面组织成**五个纵向分区**：
+
+  ① 主视觉区（占约 55%）：你生成的 scene 图铺满此区，★**下方约 3/4 会被深色渐变蒙版覆盖**，
+     大标题/副标题/品牌压在这个蒙版上。因此 **scene 图的构图要点**：
+     - 商品主体放在**上 2/3 内、且偏上**（蒙版会压住下 1/3），不要放在画面正下方；
+     - 画面下方 1/3 保持**简洁、低对比**（纯色墙/柔和渐变/浅景深虚化），让深色蒙版能自然压上；
+     - 商品完整、清晰、有真实承托平面与柔和方向光，商业摄影质感。
+  ② 卖点网格（占约 20%，深色底）：2×2 网格，每格 = 图标 + 粗体小标题 + 一行说明。
+  ③ 细节四格（占约 18%，深色底）：4 张产品特写细节图 + 各自标题（由系统按卖点生成）。
+  ④ 底部场景导航条（占约 6%，深色底）：4 个场景词（如 Music/Study/Gaming/Work）。
+
+【poster_mode 判定】
+- 电商主图/详情海报类需求（"宣传海报""主图""产品海报"）→ **true**；
+- 仅需要一张氛围图/横幅 → false。默认 **true**（本系统定位就是出宣传海报）。
+
+【卖点写法（海报的卖点网格依赖它）】
+- `core_points`/`bullets` 每条卖点必须写成 **`标题|一行说明`** 两段式（英文，竖线分隔），
+  标题 ≤ 4 个词、说明 ≤ 8 个词。例：`Clear Sound|Enjoy every detail`、
+  `3.5mm Jack|Wide compatibility`。缺说明时也要保留竖线（`标题|`）。
+- 至少给 4 条卖点（覆盖外观/功能/材质/配件四个角度），供海报的**卖点网格(4)** 与
+  **细节四格(4)** 复用。
+
+==========================================================
 # 四、负面提示词
 ==========================================================
 negative_prompt 必须包含（用英文，逗号分隔）：people, person, human, face, hand, animal, pet, text, letters, numbers, watermark, logo, fake text, random letters, extra objects, duplicate, distorted, deformed, melted, low quality, blurry, noise, oversaturated, cartoon, illustration, anime, bad anatomy。
@@ -137,6 +163,7 @@ negative_prompt 必须包含（用英文，逗号分隔）：people, person, hum
   "palette": ["3-5 个与产品协调的主色（十六进制）"],
   "text_area": "文字区域位置（top|bottom|left|right）",
   "template_id": "版式模板 ID（magazine=穿戴上品；hero=其他品类）",
+  "poster_mode": "是否产出多分区电商宣传海报（true|false，默认 true）",
   "product_placement": {"position": "主体位置（如 center-right）", "scale": "主体占画面比例（0.60-0.78）"}
 }
 
