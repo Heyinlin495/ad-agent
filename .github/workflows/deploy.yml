@@ -27,6 +27,14 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # registry 缓存 ref 必须**全小写**（Docker/BuildKit 硬性要求），而
+      # github.repository 会保留用户名大小写（Heyinlin495）→ 直接拼接会报
+      # "repository name ... must be lowercase"。metadata-action 会自动转小写，
+      # 但手工拼的 cache ref 不会，故这里显式降为小写。
+      - name: 计算小写镜像前缀
+        id: lc
+        run: echo "image=$(echo '${{ env.IMAGE }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       # 用 docker-container driver 的 buildx：GHCR 缓存导出需要它（默认 docker driver 不支持）
       - name: 设置 Buildx
         uses: docker/setup-buildx-action@v4
@@ -61,8 +69,8 @@ jobs:
           # 极易触顶 GitHub Actions 每仓库 10GB 缓存上限而被淘汰 → 每次冷构建
           # → 各层 digest 全变 → 服务器每次冷拉 3.66GB（SSH 部署 18 分钟的主因）。
           # registry 缓存无此上限，且与镜像同库同权限。
-          cache-from: type=registry,ref=${{ env.IMAGE }}/backend:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE }}/backend:buildcache,mode=max,ignore-error=true
+          cache-from: type=registry,ref=${{ steps.lc.outputs.image }}/backend:buildcache
+          cache-to: type=registry,ref=${{ steps.lc.outputs.image }}/backend:buildcache,mode=max,ignore-error=true
 
       # ---- 前端 ----
       - name: 构建并推送 web
@@ -81,8 +89,8 @@ jobs:
           push: true
           tags: ${{ steps.meta-web.outputs.tags }}
           labels: ${{ steps.meta-web.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.IMAGE }}/web:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE }}/web:buildcache,mode=max,ignore-error=true
+          cache-from: type=registry,ref=${{ steps.lc.outputs.image }}/web:buildcache
+          cache-to: type=registry,ref=${{ steps.lc.outputs.image }}/web:buildcache,mode=max,ignore-error=true
 
       # ---- 让镜像对服务器免登录可 pull（public）----
       - name: 设置 GHCR 包为公开
