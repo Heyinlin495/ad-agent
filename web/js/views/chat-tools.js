@@ -9,10 +9,10 @@
    注意：所有状态查询必须限定在**被点击卡片所在的消息容器内**，
    绝不使用 document 级 getElementById —— 同一会话会出现多张同构卡片。
    ============================================================ */
-import { q, qa, toast, copyText } from "../core/dom.js?v=2c2bf4b0";
-import { postJson } from "../core/api.js?v=2c2bf4b0";
-import { state } from "../core/state.js?v=2c2bf4b0";
-import { requestCancel } from "./chat-stream.js?v=2c2bf4b0";
+import { q, qa, toast, copyText } from "../core/dom.js?v=7d6d0fde";
+import { postJson } from "../core/api.js?v=7d6d0fde";
+import { state } from "../core/state.js?v=7d6d0fde";
+import { requestCancel } from "./chat-stream.js?v=7d6d0fde";
 
 /** 由 chat-flow 注入的"跑生成任务"回调，避免 tools ←→ flow 循环依赖 */
 let runFlow = {

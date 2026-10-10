@@ -125,7 +125,7 @@ class Settings(BaseSettings):
 
     # ---------- 安全 / 限流 ----------
     rate_limit_per_minute: int = 60
-    max_upload_size_mb: int = 10
+    max_upload_size_mb: int = 50
     # 广告生成任务并发上限（独立线程池，避免与 Web 请求线程互相挤占）
     task_max_workers: int = 4
     # 在途任务总上限（排队 + 执行中）：超过即拒绝提交，防止线程池待办队列无上限增长。

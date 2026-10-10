@@ -11,11 +11,11 @@
 import {
   COUNTRIES, LANGUAGE_NAMES, PLATFORMS, STYLES, SIZES,
   FLOW_NODES, NODE_NAMES, NODE_INDEX, REGEN_HINTS, RTL_LANGUAGES,
-} from "../constants.js?v=2c2bf4b0";
-import { $, esc, safeUrl, q, uid, scrollBottom } from "../core/dom.js?v=2c2bf4b0";
-import { state } from "../core/state.js?v=2c2bf4b0";
-import { fileUrl } from "../core/api.js?v=2c2bf4b0";
-import { maxFileMb } from "./composer.js?v=2c2bf4b0";
+} from "../constants.js?v=7d6d0fde";
+import { $, esc, safeUrl, q, uid, scrollBottom } from "../core/dom.js?v=7d6d0fde";
+import { state } from "../core/state.js?v=7d6d0fde";
+import { fileUrl } from "../core/api.js?v=7d6d0fde";
+import { maxFileMb } from "./composer.js?v=7d6d0fde";
 
 /* ---------- 基础消息 ---------- */
 

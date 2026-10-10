@@ -17,7 +17,22 @@ MAX_SIZE_MB = settings.max_upload_size_mb
 
 # 解压炸弹防护：只限制压缩后字节数不够——一个 10MB 的 PNG 可解压成数亿像素，
 # 在 Image.load() 阶段就会吃掉数 GB 内存打爆 worker。这里按总像素数设上限。
-Image.MAX_IMAGE_PIXELS = 40_000_000  # 4000 万像素（约 6300x6300）
+#
+# JPEG/MPO 另有 DCT 缩放解码（见 _JPEG_DECODE_MAX_DIM）：可在 load() 前让 libjpeg
+# 直接按 1/2、1/4、1/8 降采样，解码内存与像素数解耦，故对 JPEG 放宽到 80MP，
+# 覆盖 48/50/64MP 手机直出（后续 compress_image 反正只保留 1600px）。
+# PNG/WebP 无 draft 能力，只能整幅解码，仍按 40MP 收紧。
+_PIXEL_LIMIT_JPEG = 80_000_000
+_PIXEL_LIMIT_OTHER = 40_000_000
+_JPEG_FORMATS = {"JPEG", "MPO"}
+
+# JPEG draft 目标边长：与 compress_image 的 1600 留出余量，避免二次缩放损失。
+# 实测 Pillow 11 仅对 RGB 彩色 JPEG 生效，灰度/CMYK 为 no-op（这两者内存占用本就低）。
+_JPEG_DECODE_MAX_DIM = 3000
+
+# PIL 自身的兜底阈值（超 2× 才硬报错）。真实闸门是 validate_image 的显式校验，
+# 这里放宽以免大图在 draft 降采样之前就被 PIL 拦掉。
+Image.MAX_IMAGE_PIXELS = 200_000_000
 
 
 class ImageProcessError(Exception):
@@ -39,10 +54,16 @@ def validate_image(data: bytes, filename: str) -> tuple[Image.Image, str]:
         # 先读尺寸再 load()：Image.open 是惰性的，此时才知真实像素数，
         # 可在解码前拦截解压炸弹（否则 load() 已经分配了巨量内存）。
         pw, ph = img.size
-        if pw * ph > Image.MAX_IMAGE_PIXELS:
+        is_jpeg_like = (img.format or "").upper() in _JPEG_FORMATS
+        pixel_limit = _PIXEL_LIMIT_JPEG if is_jpeg_like else _PIXEL_LIMIT_OTHER
+        if pw * ph > pixel_limit:
             raise ImageProcessError(
                 f"图片像素过大（{pw}x{ph}），请压缩后重试"
             )
+        if is_jpeg_like:
+            # 大图降采样解码：48MP 手机原图整幅解码要约 150MB，draft 后 libjpeg
+            # 只解 1/2~1/8，而下游 compress_image 最终只保留 1600px，画质无实际损失。
+            img.draft(img.mode, (_JPEG_DECODE_MAX_DIM, _JPEG_DECODE_MAX_DIM))
         img.load()
     except ImageProcessError:
         raise

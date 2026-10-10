@@ -36,6 +36,10 @@ services:
       - FILE_ACCESS_TOKEN=NKzAyyWoeLANz_7DC-6rhiCXhzG-Btpc2VASvOd7pMk
       - FILE_URL_SECRET=DddPfI1F6tdxl_waNA5UE7tx_-b9S-Jxe3ksNF2nRpE
       - STRICT_SECURITY=true
+      # 单张上传体积上限（MB）。这里显式声明，避免依赖 secret 里是否带该键；
+      # compose 的 environment 优先级高于 env_file，故必然生效。
+      # ⚠ 要同步 ≥ web/nginx.conf 的 client_max_body_size 方向调整（nginx 值须更大）。
+      - MAX_UPLOAD_SIZE_MB=50
     ports:
       # 宿主机直接访问后端的端口：避开被占用的 8000，改到 8010；
       # 域名(agent.heyinlin.asia)侧走 host nginx -> web(8502) -> backend:8000(容器内)，不受影响

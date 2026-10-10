@@ -1,7 +1,7 @@
 /* ============================================================
    后端 API 访问层：统一超时、统一错误信封解析
    ============================================================ */
-import { getApiBase, setApiBase } from "../config.js?v=2c2bf4b0";
+import { getApiBase, setApiBase } from "../config.js?v=7d6d0fde";
 
 // 对外统一出口：调用方只需从 core/api.js 取 API 相关能力
 export { getApiBase, setApiBase };

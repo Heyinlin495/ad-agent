@@ -59,4 +59,4 @@ export const REGEN_HINTS = [
 export const OK_IMAGE_EXTS = ["jpg", "jpeg", "png", "webp"];
 
 /** 后端 /settings 未取到时的兜底上传上限（MB） */
-export const DEFAULT_MAX_FILE_MB = 10;
+export const DEFAULT_MAX_FILE_MB = 50;

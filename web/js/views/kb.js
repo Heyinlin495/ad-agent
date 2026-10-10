@@ -1,9 +1,9 @@
 /* ============================================================
    知识库：文档列表 / 上传入库 / 检索测试 / 删除
    ============================================================ */
-import { fetchJson, postJson, request } from "../core/api.js?v=2c2bf4b0";
-import { $, esc, toast } from "../core/dom.js?v=2c2bf4b0";
-import { appConfirm } from "../core/modal.js?v=2c2bf4b0";
+import { fetchJson, postJson, request } from "../core/api.js?v=7d6d0fde";
+import { $, esc, toast } from "../core/dom.js?v=7d6d0fde";
+import { appConfirm } from "../core/modal.js?v=7d6d0fde";
 
 let kbDocInstalled = false;
 

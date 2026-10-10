@@ -12,20 +12,20 @@
    绝不使用 document 级 id（同一条会话里卡片会重复出现，重复 id 会让
    后续卡片的事件绑到第一张卡片上）。
    ============================================================ */
-import { $, toast, scrollIntoViewChat } from "../core/dom.js?v=2c2bf4b0";
-import { fetchJson } from "../core/api.js?v=2c2bf4b0";
-import { state } from "../core/state.js?v=2c2bf4b0";
-import { clearAttach, maxFileMb } from "./composer.js?v=2c2bf4b0";
+import { $, toast, scrollIntoViewChat } from "../core/dom.js?v=7d6d0fde";
+import { fetchJson } from "../core/api.js?v=7d6d0fde";
+import { state } from "../core/state.js?v=7d6d0fde";
+import { clearAttach, maxFileMb } from "./composer.js?v=7d6d0fde";
 
 import {
   addMsg, bubble, addUserMsg, productCardHtml, paramsCardHtml,
   resultHtml, errorCardHtml, guideHtml, paramsInfoHtml,
   installImageFallback, analyzeSkeletonHtml, setLoadingText, startElapsed,
-} from "./chat-render.js?v=2c2bf4b0";
+} from "./chat-render.js?v=7d6d0fde";
 import {
   renderProgressCard, stopStream, stopAllStreams, bindStreamRenderers,
-} from "./chat-stream.js?v=2c2bf4b0";
-import { installCardActions, bindFlowHandlers } from "./chat-tools.js?v=2c2bf4b0";
+} from "./chat-stream.js?v=7d6d0fde";
+import { installCardActions, bindFlowHandlers } from "./chat-tools.js?v=7d6d0fde";
 
 /* ---------- 对外再导出：保持既有 import 点无需改动 ---------- */
 export { addMsg, bubble, renderProgressCard, stopStream, stopAllStreams, installImageFallback };
@@ -54,7 +54,8 @@ export async function sendMessage() {
   input.style.height = "auto";
   clearAttach();
 
-  // 骨架屏 + 已用时长：识别最长 120s，光靠一行"正在识别"用户无法区分卡死与在跑
+  // 骨架屏 + 已用时长：识别最长 180s，光靠一行"正在识别"用户无法区分卡死与在跑
+  // （放宽上传上限后，大图在慢速移动网络上的上传耗时也要计入这个预算）
   const typing = addMsg("bot", analyzeSkeletonHtml());
   const stopElapsed = startElapsed(typing);
   // 超过 20s 追加安抚文案（识别大图时属正常，但要让用户知道没挂）
@@ -69,7 +70,7 @@ export async function sendMessage() {
     const fd = new FormData();
     fd.append("file", attach.file);
     if (hint) fd.append("hint", hint);
-    const result = await fetchJson("/products/analyze", { method: "POST", body: fd, timeout: 120000 });
+    const result = await fetchJson("/products/analyze", { method: "POST", body: fd, timeout: 180000 });
 
     state.product = result.product;
     state.productId = result.product.id;

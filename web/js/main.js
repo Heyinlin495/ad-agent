@@ -6,16 +6,16 @@
      views/   业务视图（composer / chat / history / kb / settings）
      shell.js 视图切换与侧边栏
    ============================================================ */
-import { $, installGlobalErrorHandlers, toast } from "./core/dom.js?v=2c2bf4b0";
-import { request, probeApiBase, setApiBase, getApiBase } from "./core/api.js?v=2c2bf4b0";
-import { state } from "./core/state.js?v=2c2bf4b0";
-import { hooks } from "./core/wiring.js?v=2c2bf4b0";
-import { initLightbox, initImagePreview } from "./core/modal.js?v=2c2bf4b0";
-import { initShell, switchView } from "./shell.js?v=2c2bf4b0";
-import { initComposer, pickFile, autoGrow } from "./views/composer.js?v=2c2bf4b0";
-import { initKb } from "./views/kb.js?v=2c2bf4b0";
-import { loadHistory, initHistory } from "./views/history.js?v=2c2bf4b0";
-import { sendMessage, resetChat, chipGuide, chipParams, chipHint, initChat } from "./views/chat.js?v=2c2bf4b0";
+import { $, installGlobalErrorHandlers, toast } from "./core/dom.js?v=7d6d0fde";
+import { request, probeApiBase, setApiBase, getApiBase } from "./core/api.js?v=7d6d0fde";
+import { state } from "./core/state.js?v=7d6d0fde";
+import { hooks } from "./core/wiring.js?v=7d6d0fde";
+import { initLightbox, initImagePreview } from "./core/modal.js?v=7d6d0fde";
+import { initShell, switchView } from "./shell.js?v=7d6d0fde";
+import { initComposer, pickFile, autoGrow } from "./views/composer.js?v=7d6d0fde";
+import { initKb } from "./views/kb.js?v=7d6d0fde";
+import { loadHistory, initHistory } from "./views/history.js?v=7d6d0fde";
+import { sendMessage, resetChat, chipGuide, chipParams, chipHint, initChat } from "./views/chat.js?v=7d6d0fde";
 
 /* ---------- 健康检查 ---------- */
 async function checkHealth() {
