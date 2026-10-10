@@ -414,8 +414,13 @@ def prompt_gen_node(state: AgentState) -> dict[str, Any]:
 def _scene_prompt(product: dict[str, Any], design: dict[str, Any]) -> str:
     """通道 A「整图重塑」提示词：让 AI 直接画出商品已场景化陈列的完整广告画面。
 
-    优先使用 LLM 给出的 `scene_prompt`；缺失时用产品字段拼一条兜底提示词
+    优先使用 LLM 给出的 `scene_prompt`；缺失时按**品类**拼兜底提示词
     （保证链路不因 LLM 漏填而退化回贴图）。
+
+    兜底必须分品类：LLM 对非穿戴类商品会**故意留空** scene_prompt（见 prompt_gen.txt
+    的"其他品类可为空串"），此时若统一套用服装模板（headless mannequin + 挂衣杆 +
+    手袋），数码/美妆等商品会被硬塞进人台，生成"鼠标摆在人肩膀上"这类物料。
+    非穿戴类改用**静物陈列**（still-life / product on surface）措辞。
     """
     llm_scene = str(design.get("scene_prompt") or "").strip()
     if len(llm_scene) >= 40:
@@ -433,25 +438,102 @@ def _scene_prompt(product: dict[str, Any], design: dict[str, Any]) -> str:
     side = str(design.get("text_area") or "left").lower()
     pos = "right side" if side == "left" else "left side"
     empty = "left" if side == "left" else "right"
+
+    if is_worn_apparel(product):
+        return (
+            f"Premium fashion editorial photography: a {subject} elegantly presented on a "
+            f"headless mannequin in a warm minimalist studio interior, cream plaster wall, "
+            f"slim wooden clothing rail with wooden hangers, a small boucle side table with a "
+            f"leather handbag and stacked art books, delicate dried branches in a ceramic vase, "
+            f"soft diffused daylight creating gentle wall shadows, the subject positioned on the "
+            f"{pos} of the frame, generous clean negative space on the {empty} for text, "
+            f"photorealistic fabric texture, accurate color and silhouette, shallow depth of field, "
+            f"high-end brand campaign, editorial magazine aesthetic, warm neutral color grading, "
+            f"sharp details, high dynamic range, 8k, ultra detailed"
+        )
+
+    # 非穿戴类：静物陈列（禁止人台/挂衣杆/穿戴类措辞），场景复用 LLM 的 image_prompt
+    scene = _still_life_scene(design)
     return (
-        f"Premium fashion editorial photography: a {subject} elegantly presented on a "
-        f"headless mannequin in a warm minimalist studio interior, cream plaster wall, "
-        f"slim wooden clothing rail with wooden hangers, a small boucle side table with a "
-        f"leather handbag and stacked art books, delicate dried branches in a ceramic vase, "
-        f"soft diffused daylight creating gentle wall shadows, the subject positioned on the "
-        f"{pos} of the frame, generous clean negative space on the {empty} for text, "
-        f"photorealistic fabric texture, accurate color and silhouette, shallow depth of field, "
-        f"high-end brand campaign, editorial magazine aesthetic, warm neutral color grading, "
-        f"sharp details, high dynamic range, 8k, ultra detailed"
+        f"Premium commercial product photography: a {subject} displayed as the hero product "
+        f"on a clean surface, {scene}"
+        f"the product positioned on the {pos} of the frame, generous clean negative space on "
+        f"the {empty} for text, accurate shape, color and material rendition, realistic "
+        f"reflections and contact shadow, shallow depth of field, high-end e-commerce "
+        f"campaign aesthetic"
     )
 
 
+def _still_life_scene(design: dict[str, Any]) -> str:
+    """从 LLM 的 image_prompt 提取静物场景描述，拼进通道 A 兜底提示词。
+
+    image_prompt 是 LLM 为非穿戴类精心写好的背景/场景/灯光描述（只描述环境、
+    不含商品），去掉其中的"留白"与"无物体"约束（那是给贴图用的，整图重塑下
+    商品本身就在画面里，留着会让模型不敢画商品）后即可直接复用。
+    """
+    raw = str(design.get("image_prompt") or "").strip()
+    if not raw:
+        return "in a minimalist studio setting with soft directional lighting, clean seamless backdrop, "
+
+    # 按句子切分，丢弃"留白/无物体/无人"这类约束句，避免与"商品已在画面中"冲突
+    drop = re.compile(
+        r"(empty clean space|empty space|negative space|for product placement|"
+        r"no objects|no people|no hands|no furniture|center of the frame|"
+        r"product placement|reserved for|clean space in the)",
+        re.IGNORECASE,
+    )
+    kept = [s.strip() for s in re.split(r"(?<=\.)\s+", raw) if s.strip() and not drop.search(s)]
+    if not kept:
+        kept = [s.strip() for s in re.split(r"(?<=\.)\s+", raw) if s.strip()][:2]
+    scene = " ".join(kept).strip()
+    if not scene:
+        return "in a minimalist studio setting with soft directional lighting, clean seamless backdrop, "
+    # 去掉句末多余句号后统一用一个 ", " 接续后面的商品/构图描述
+    scene = scene.rstrip(".")
+    # 去重：image_prompt 常以"包装句"开头（如 "Premium commercial product photography
+    # background for ..."），与本函数外层前缀重复，直接去掉首句避免提示词冗余
+    first_dot = scene.find(".")
+    if first_dot != -1 and first_dot < 120:
+        head = scene[:first_dot].lower()
+        if "product photography" in head or "studio setting" in head:
+            scene = scene[first_dot + 1 :].strip()
+    return (scene.rstrip(".") or "in a minimal studio setting with soft lighting") + ", "
+
+
 def _scene_negative(design: dict[str, Any]) -> str:
-    """通道 A 的负面词：**不得**包含 product/clothing（否则商品会被抹掉）。"""
+    """通道 A 的负面词：**不得**包含商品自身或其品类词（否则商品会被抹掉）。
+
+    LLM 写的 negative_prompt 有时会带具体品类词（实测鼠标任务里出现
+    `mouse, keyboard, laptop, monitor`），这些是通道 B 为"背景留白"写的
+    "别在背景里画科技杂物"约束；但通道 A 是整图重塑，商品本身就在画面里，
+    照搬会直接把商品从画面里抹掉。
+
+    剥离策略（两层，避免误伤）：
+    1. 通称词（product/clothing/item…）**必定**剥离；
+    2. 品类实体词分两种处理：
+       - 商品自身命中的词（鼠标任务里的 `mouse`）→ **必定剥离**，否则等于让模型别画主角；
+       - 商品未命中的"跨品类杂物"词（`laptop`/`monitor`/`cable`）→ 也剥离，
+         它们是通道 B 为背景留白写的"别出现杂物"约束，通道 A 下会误伤。
+    注意 `bag`/`shoe`/`watch` 这类词：若商品本身就是它，剥离是**正确**的（不能压制主角）；
+    若商品不是它，剥离同样正确（背景别出现无关实物）。两种情况都剥离。
+    """
     base = str(design.get("negative_prompt") or "")
-    # 去掉会误伤商品的词
-    for bad in ("product", "clothing", "garment", "apparel", "jacket", "dress", "shirt"):
-        base = re.sub(rf"\b{re.escape(bad)}\b,?\s*", "", base, flags=re.IGNORECASE)
+    always_drop = (
+        "product", "clothing", "garment", "apparel", "item", "goods",
+        "jacket", "dress", "shirt", "tshirt",
+    )
+    # 通道 A 下必须全部剥离：要么是商品自己（不能压制主角），要么是背景杂物（不该出现）
+    _cross_category = (
+        "mouse", "keyboard", "laptop", "notebook", "computer", "monitor",
+        "tablet", "phone", "smartphone", "headphone", "earbud", "camera",
+        "cable", "wire", "charger", "cup", "mug", "bottle", "bag", "wallet",
+        "shoe", "sneaker", "watch", "glasses", "sunglasses", "hat", "scarf",
+        "pen", "paper clip", "stapler",
+    )
+    drop = list(always_drop) + list(_cross_category)
+
+    for bad in drop:
+        base = re.sub(rf"\b{re.escape(bad)}(?:s|es)?\b,?\s*", "", base, flags=re.IGNORECASE)
     extra = (
         "people, person, human, face, hand, extra objects, duplicate, distorted, "
         "deformed, melted, low quality, blurry, noise, oversaturated, cartoon, "

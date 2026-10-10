@@ -45,18 +45,29 @@
 本系统有**两条**出图通道，你必须同时给出两者的提示词：
 
 ## 通道 A（优先）：scene_prompt —— 整图重塑
-用于**服装/鞋包/配饰等穿戴类商品**，做法是让 AI 直接生成一张"完整商品已被场景化陈列"的
-高级广告摄影图（商品与场景、光影、材质浑然一体），而不是"先画空背景再贴产品"。
+让 AI 直接生成一张"完整商品已被场景化陈列"的高级广告摄影图（商品与场景、光影、材质
+浑然一体），而不是"先画空背景再贴产品"。**所有品类都应尽量给出 scene_prompt**。
 - scene_prompt 必须**明确描述商品本身**（品类、颜色、廓形、材质、细节），并把它自然融入场景；
-- 商品要以"人台/挂杆/平铺/静物陈列"等方式完整呈现（**不要生成真人模特的脸与手**，除非产品本身是真人穿戴展示）；
-- 场景要有高级感与呼吸感：干净墙面 + 少量道具（边几、书本、包袋、干枝花器、挂衣杆等）+ 柔和自然光；
+- **陈列方式必须与品类匹配，这是硬约束**：
+  - 【穿戴类】服装/鞋/包/配饰 → 人台 mannequin / 挂杆 clothing rail / 平铺 flat lay；
+  - 【非穿戴类】数码电子/美妆个护/食品饮料/家居日用/母婴玩具/珠宝眼镜/运动户外工具 →
+    **静物陈列**：商品作为 hero product 摆放在干净台面/桌面/展台/地面平面之上
+    （on a clean surface / on a polished desk / on a matte pedestal / on a stone slab），
+    配少量同调性道具。**严禁** mannequin / clothing rail / hanger / 穿戴类任何措辞——
+    把鼠标、香水、零食放到"人台/肩膀上"是严重错误；
+  - 【家具/家电】产品即场景主体，置于真实室内场景中，摆放平面须真实合理；
+- 呈现方式须符合商品物理逻辑：有底座的立在平面上、可手持的平放或立放，**不得悬空、不得嫁接在人身上**；
+- 场景要有高级感与呼吸感：干净背景 + 少量道具 + 柔和方向光/自然光；
 - 构图要为**单侧文字留白**做准备：把商品放在**画面中偏右**（左侧留出整片干净区域），或按 text_area 反向着放；
-- 必须包含：真实材质质感、柔和方向光/自然光、高级商业摄影、时尚杂志编辑感、浅景深、画质词。
+- 必须包含：真实材质质感、柔和方向光/自然光、高级商业摄影、浅景深、画质词。
+- **仅当确实无法构思场景时**才留空串（系统兜底照样能出图，但效果不如你亲自写）。
 
 ## 通道 B（兜底）：image_prompt —— 背景
-用于**非穿戴类商品**（数码、美妆、食品、家居等），沿用"干净背景中央留白 + 真实产品贴图"的老做法。
+备用通道（通道 A 失败时降级使用），沿用"干净背景中央留白 + 真实产品贴图"的老做法。
 - image_prompt **只描述背景/场景/光线**，绝不描述产品本身；
-- 必须为产品在画面中央预留清晰无遮挡的空白区，并写出 "large empty clean space in the center of the frame"。
+- 必须为产品在画面中央预留清晰无遮挡的空白区，并写出 "large empty clean space in the center of the frame"；
+- **注意**：为"背景里别出现杂物"而写的品类词（如 mouse / keyboard / laptop）只属于本通道；
+  通道 A 是整图重塑、商品就在画面里，系统会自动剥离这类词，你无需迁就。
 
 ## 版式选择（template_id）
 - 穿戴类（服装/鞋/包/配饰）→ template_id 取 **magazine**（衬线大标题 + 图标卖点 + 深色 CTA，文字落在一侧留白区）；
@@ -112,7 +123,7 @@ negative_prompt 必须包含（用英文，逗号分隔）：people, person, hum
   "ad_type": "广告类型（产品主视觉|产品卖点|使用场景|功能展示|痛点解决|节日促销|品牌形象|社交媒体）",
   "ad_style": "视觉风格（如 premium commercial photography / warm editorial studio / minimal studio）",
   "scene": "一句话场景描述（中文）",
-  "scene_prompt": "通道 A：整图重塑提示词（英文，描述商品+场景+光影为一体的完整广告画面；穿戴类必填，其他品类可为空串）",
+  "scene_prompt": "通道 A：整图重塑提示词（英文，描述商品+场景+光影为一体的完整广告画面；陈列方式必须匹配品类：穿戴类用人台/挂杆，其他品类用静物台面陈列，尽量填写）",
   "image_prompt": "通道 B：背景提示词（英文，只描述背景/留白，不含商品；非穿戴类必填，穿戴类可为空串）",
   "negative_prompt": "英文 Negative Prompt（词表见上）",
   "composition": "构图方式（可写 magazine|hero 等）",
@@ -122,17 +133,23 @@ negative_prompt 必须包含（用英文，逗号分隔）：people, person, hum
   "product_placement": {"position": "主体位置（如 center-right）", "scale": "主体占画面比例（0.60-0.78）"}
 }
 
-【scene_prompt 编写规范（通道 A，穿戴类必填）】
+【scene_prompt 编写规范（通道 A）】
 一段完整、连贯的**英文**提示词，必须包含（按顺序）：
-1. 商业摄影定位（premium fashion editorial photography / high-end brand campaign）；
+1. 商业摄影定位（穿戴类用 premium fashion editorial photography；其他品类用
+   premium commercial product photography / high-end brand campaign）；
 2. **商品的精确描述**（品类、颜色、廓形、材质、关键细节；如 "a beige cropped wool jacket with
-   two front flap pockets, round buttons and contrast cuffs, styled with wide-leg navy trousers"）；
-3. 陈列方式（on a headless mannequin / on a wooden clothing rail with wooden hangers）；
-4. 场景与环境（warm cream plaster wall, slim wooden clothing rail, a boucle side table with a
-   leather handbag and stacked art books, dried branches in a ceramic vase）；
-5. 灯光（soft diffused daylight from the right, gentle wall shadows, warm neutral grading）；
+   two front flap pockets, round buttons and contrast cuffs"）；
+3. **陈列方式（必须匹配品类）**：
+   - 穿戴类：on a headless mannequin / on a wooden clothing rail with wooden hangers；
+   - 非穿戴类：静物陈列如 "displayed on a clean matte desk surface" /
+     "standing on a polished stone pedestal" / "placed on a soft fabric surface"；
+     **严禁** mannequin / clothing rail / hanger / 任何穿戴类措辞，且商品须有真实承托平面，不得悬空；
+4. 场景与环境（与品类调性一致；穿戴类可用 warm cream plaster wall + wooden rail 等，
+   数码类用深灰几何质感墙 + 冷灰渐变，美妆类用大理石台面等，参见品类风格参考）；
+5. 灯光（soft diffused daylight / dramatic side light + 轮廓光，按材质选择）；
 6. 构图（subject positioned on the right side, generous clean negative space on the left for text）；
-7. 摄影质感（shallow depth of field, photorealistic fabric texture, editorial magazine aesthetic）；
+7. 摄影质感（shallow depth of field；穿戴类写 photorealistic fabric texture，
+   其他品类写 realistic material rendering / accurate reflections & contact shadow）；
 8. 画质词（sharp details, high dynamic range, 8k, ultra detailed）。
 
 【image_prompt 编写规范（通道 B）】

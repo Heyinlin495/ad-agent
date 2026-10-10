@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import re
 
 from PIL import Image
 
@@ -152,6 +153,100 @@ def test_scene_negative_drops_product_words():
     assert "people" in low and "blurry" in low
     # 去重：重复的 people/human 只保留一次
     assert low.count("people") == 1
+
+
+def test_non_apparel_scene_prompt_is_still_life_not_mannequin():
+    """回归：非穿戴类走通道 A 兜底时，**不得**套用服装模板。
+
+    线上事故：鼠标任务 LLM 正确地把 scene_prompt 留空（非穿戴类），但兜底提示词
+    是服装专用模板（headless mannequin + 挂衣杆 + 手袋），结果生成"鼠标摆在人肩膀上"。
+    非穿戴类的兜底必须是静物陈列（hero product on a surface），且场景复用 image_prompt。
+    """
+    from app.agents.category_rules import is_worn_apparel
+    from app.agents.nodes import _scene_prompt
+
+    mouse = {"name": "Logitech Wired USB Optical Mouse",
+             "category": "Computer Peripherals", "material": "", "color": ""}
+    assert is_worn_apparel(mouse) is False
+
+    design = {
+        "scene_prompt": "",  # LLM 对非穿戴类留空 → 走兜底
+        "text_area": "bottom",
+        "image_prompt": (
+            "Premium commercial product photography background for electronics. "
+            "Deep charcoal acoustic foam geometric wall with subtle angular texture. "
+            "Large empty clean space in the center of the frame for product placement. "
+            "No objects, no people, no hands in center area. "
+            "Photorealistic material rendering, 8k, ultra detailed."
+        ),
+    }
+    sp = _scene_prompt(mouse, design)
+    low = sp.lower()
+
+    # 1) 商品本身必须被描述
+    assert "mouse" in low
+    # 2) 严禁服装模板措辞（这就是线上 bug 的根因）
+    for bad in ("mannequin", "clothing rail", "hanger", "fabric texture",
+                "warm minimalist studio", "boucle", "dried branches"):
+        assert bad not in low, f"非穿戴类兜底不应出现服装模板词: {bad}"
+    # 3) 必须改为静物陈列，且有真实承托面
+    assert "hero product" in low
+    assert any(k in low for k in ("surface", "desk", "pedestal", "slab"))
+    # 4) 贴图用的"中央留白"约束不应残留（整图重塑下商品就在画面里）
+    assert "large empty clean space" not in low
+    # 5) 应复用 image_prompt 的场景/灯光描述
+    assert "acoustic foam" in low
+
+
+def test_scene_negative_drops_category_entity_words():
+    """回归：通道 A 负面词必须剥离品类实体词。
+
+    线上事故：鼠标任务的 negative_prompt 含 `mouse, keyboard, laptop, monitor`，
+    这些是通道 B 为"背景别出现杂物"写的；通道 A 整图重塑下照搬会把商品本身抹掉。
+    """
+    from app.agents.nodes import _scene_negative
+
+    neg = _scene_negative({
+        "negative_prompt": "people, blurry, product, mouse, keyboard, laptop, monitor, "
+                           "cable, phone, notebook, cup, sofa, plant",
+    })
+    low = neg.lower()
+    for bad in ("mouse", "keyboard", "laptop", "monitor", "cable", "phone",
+                "notebook", "cup", "product"):
+        assert not re.search(rf"(^|, ){bad}(,|$)", low), f"负面词应剥离: {bad}"
+    # 仍应保留有效负面词与背景约束
+    assert "people" in low and "blurry" in low and "sofa" in low
+    # 复数形式也要能剥离
+    neg2 = _scene_negative({"negative_prompt": "mouses, mices, keyboards, laptops"})
+    assert "keyboard" not in neg2.lower()
+
+
+def test_worn_apparel_scene_prompt_keeps_mannequin_template():
+    """反向回归：真正的服装兜底仍须走人台模板（本次修复不能误伤穿戴类）。"""
+    from app.agents.nodes import _scene_prompt
+
+    jacket = {"name": "Beige Cropped Wool Jacket", "category": "Apparel",
+              "material": "wool", "color": "beige"}
+    sp = _scene_prompt(jacket, {"scene_prompt": "", "text_area": "left"})
+    low = sp.lower()
+    assert "mannequin" in low
+    assert "clothing rail" in low
+    assert "fashion editorial" in low
+    assert "hero product" not in low
+
+
+def test_llm_scene_prompt_passed_through_unchanged():
+    """LLM 已给出合格 scene_prompt 时必须原样使用，不得被兜底覆盖。"""
+    from app.agents.nodes import _scene_prompt
+
+    custom = ("A premium still life of the product on a polished walnut desk with soft "
+              "window light, cool blue rim light, editorial composition with generous "
+              "left negative space, sharp details, 8k")
+    out = _scene_prompt(
+        {"name": "Logitech Mouse", "category": "Computer Peripherals"},
+        {"scene_prompt": custom, "text_area": "left"},
+    )
+    assert out == custom
 
 
 def test_magazine_layout_keeps_text_off_subject():
