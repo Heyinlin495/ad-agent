@@ -31,6 +31,58 @@ from app.image.fonts import load_font
 from app.image import composer as C
 
 
+# ---------------------------------------------------------------- 字号基准
+# 🚨 字号必须锚定**全图画布高度**，而不是所属分局的高度。
+# 历史事故：各分局曾按 `ch * 0.24`（ch=单元格高）/ `cap_h * 0.42`（cap_h=标题带高）
+# 计算字号。这些基数本身只占全图 8%~20%，再乘一个小系数后，正文字号只剩
+# 8~10px（1080 画布，占画布高 0.9%），在手机上完全不可读。
+# 现在统一为 `H * 系数`，使字号只随画布缩放、不随分局被挤压。
+#
+# 各系数按电商主图的移动端可读性下限校准：正文不小于画布高的 2%
+# （1080 下约 22px）。经验值参考：标题 3.0%、正文 2.2%、辅助 2.4%。
+_FS_GRID_TITLE = 0.030     # 卖点网格 · 标题
+_FS_GRID_DESC = 0.022      # 卖点网格 · 说明
+_FS_DETAIL_CAP = 0.024     # 细节四格 · 图下标题
+_FS_FOOTER = 0.022         # 底部场景条 · 场景词
+_FS_EYEBROW = 0.022        # 主视觉 · 眉题 / 品牌行
+_FS_HERO_TITLE = 0.130     # 主视觉 · 主标题基准（自适应放大起点）
+_FS_HERO_TITLE_MAX = 0.170  # 主视觉 · 主标题放大上限
+_FS_HERO_SUB = 0.050       # 主视觉 · 副标题
+
+# 字号地板（绝对像素）：任何情况下不低于此值，避免极小画布下彻底不可读
+_MIN_FONT_PX = 14
+
+
+def _fs(canvas_h: int, ratio: float) -> int:
+    """按画布高度求字号，并套用绝对地板。"""
+    return max(_MIN_FONT_PX, int(round(canvas_h * ratio)))
+
+
+def _line_h(font: Any, ratio: float = 1.18) -> int:
+    """按字体自身度量求**行高**（walk line height）。
+
+    🚨 不能用 `font.size * ratio`。PIL 的 `font.size` 是 point size，而
+    `truetype` 字体的 `ascent + descent` 通常大于 point size（实测 30px 字体
+    为 32+8=40px），且带下伸部的字母（g/y/p）会继续往下探。旧版用 `font.size`
+    估行高，导致**相邻两行文字纵向重叠**（实测网格区"标题"压在"说明"上）。
+    """
+    try:
+        asc, desc = font.getmetrics()
+        return int((asc + desc) * ratio)
+    except Exception:  # noqa: BLE001  默认位图字体无 getmetrics
+        return int(getattr(font, "size", 12) * 1.3)
+
+
+def _fit_line(text: str, font: Any, max_w: int, max_lines: int) -> list[str]:
+    """把 `text` 换行并截断到 `max_lines` 行，**超出的部分丢掉**。
+
+    🚨 旧版用切片 `[...][:max_lines]` 截断，但渲染循环却按 `font.size` 逐行推 y，
+    于是"被截掉的行"的位置仍是空的，视觉上像是漏了一行。这里统一在换行阶段收口。
+    """
+    lines = C._wrap_text(text, font, max_w)
+    return lines[:max_lines]
+
+
 # ---------------------------------------------------------------- 配色
 def _palette(design: dict[str, Any]) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     """从视觉方案 palette 推 (深色, 强调色)。
@@ -67,16 +119,21 @@ def _muted(fg: tuple[int, int, int]) -> tuple[int, int, int]:
 
 # ---------------------------------------------------------------- 分区高度
 def _section_heights(h: int, has_grid: bool, has_details: bool, has_footer: bool) -> dict[str, int]:
-    """按"哪些分区存在"分配纵向空间。占比经参考海报校准：
-    主视觉 0.56 / 卖点网格 0.20 / 细节带 0.18 / 底部条 0.06，归一化到画布高。
+    """按"哪些分区存在"分配纵向空间。
+
+    权重经**可读性校准**：旧版 hero .56 / grid .20 / details .18 / footer .055 把
+    底栏压到全图 5.5%（1080 下仅 59px），连"图标 + 场景词"都排不开。现改为
+    hero .52 / grid .23 / details .19 / footer .075，把纵向空间从主视觉匀给三个
+    文字分区（主视觉铺满即可，多出的高度对观感贡献很小，但少了就是"字挤在一起"）。
+    另外底栏单独 clamp 一个**最低高度**，防止素材降级时被进一步压扁。
     """
-    weights = {"hero": 0.56}
+    weights = {"hero": 0.50}
     if has_grid:
-        weights["grid"] = 0.20
+        weights["grid"] = 0.26
     if has_details:
-        weights["details"] = 0.18
+        weights["details"] = 0.185
     if has_footer:
-        weights["footer"] = 0.055
+        weights["footer"] = 0.075
     total = sum(weights.values())
     out: dict[str, int] = {}
     acc = 0
@@ -88,6 +145,18 @@ def _section_heights(h: int, has_grid: bool, has_details: bool, has_footer: bool
             v = int(h * weights[k] / total)
             out[k] = v
             acc += v
+    # 底栏最低高度：图标（h*0.20 半径）与场景词（字号）纵向叠放需要约 0.07h 才不挤。
+    if has_footer:
+        floor = int(h * 0.07)
+        if out["footer"] < floor:
+            deficit = floor - out["footer"]
+            out["footer"] = floor
+            # 从主视觉区扣除（主视觉吸收能力最强）
+            out["hero"] = max(int(h * 0.40), out["hero"] - deficit)
+            # 若仍不足以补齐，继续从细节带扣
+            still = h - sum(out.values())
+            if still > 0:
+                out["details"] = max(int(h * 0.14), out["details"] - still)
     return out
 
 
@@ -138,61 +207,218 @@ def _draw_hero_section(
     pad = int(w * 0.055)
     tx = x0 + pad
     max_w = w - 2 * pad
+    # 字号锚定**画布总高**（poster.size[1]），而非主视觉区高度——这样主视觉区
+    # 高度被其它分区挤压时，标题不会跟着缩水（历史事故见文件顶部说明）。
+    canvas_h = poster.size[1]
 
-    # 字号按栏宽自适应：标题基准 0.135h，但若单行宽度超过 max_w 就按比例缩到能换行成
-    # ≤2 行、且每行都不超宽。避免"标题太大直接冲出画布"（首版实测溢出）。
-    def _fit_font(text: str, base_px: int, bold: bool, max_lines: int) -> Any:
-        px = base_px
-        for _ in range(24):
-            f = load_font(max(12, int(px)), bold=bold)
+    def _fit_font(text: str, start_px: int, bold: bool, max_lines: int,
+                  max_px: int | None = None) -> Any:
+        """在"行数 ≤ max_lines 且每行不溢出"的前提下，取**尽可能大**的字号。
+
+        旧实现是**单向收缩**（从 base_px 只往下乘 0.94）：短标题因为一行就放得下，
+        根本不会触发收缩，于是永远停在基准值上——"字偏小"的观感正来源于此。
+        新实现先向上探测放大（×1.06，封顶 max_px），越过临界点后回退一档，
+        让短标题自动撑满可用宽度，长标题再逐级收缩到能放下。
+        """
+        ceiling = max_px or start_px
+        # 阶段一：向上探测，记录最后一个"放得下"的字号
+        best = None
+        px = float(start_px)
+        while px <= ceiling * 1.0001:
+            f = load_font(max(_MIN_FONT_PX, int(px)), bold=bold)
+            lines = C._wrap_text_balanced(text, f, max_w)
+            if len(lines) <= max_lines and all(f.getlength(ln) <= max_w for ln in lines):
+                best = f
+                px *= 1.06
+            else:
+                break
+        if best is not None:
+            return best
+        # 阶段二：基准值都放不下 → 向下收缩
+        px = float(start_px)
+        for _ in range(30):
+            f = load_font(max(_MIN_FONT_PX, int(px)), bold=bold)
             lines = C._wrap_text_balanced(text, f, max_w)
             if len(lines) <= max_lines and all(f.getlength(ln) <= max_w for ln in lines):
                 return f
             px *= 0.94
-        return load_font(max(12, int(px)), bold=bold)
+        return load_font(max(_MIN_FONT_PX, int(px)), bold=bold)
 
     # 自底向上堆叠（贴主视觉区底部）：副标题 → 主标题 → 眉题
+    # 行高一律用字体真实度量 `_line_h`，否则大字号下相邻行会纵向重叠。
+    #
+    # 🚨 纵向容量是**硬约束**：hero 区高度固定，而"眉题 + 品牌行 + 标题 + 副标题"
+    # 的总高度可能超出它（实测：3 行超长标题 + 2 行超长副标题 → 文字溢出到网格区、
+    # 顶部露出黑边）。因此这里先算出各块的"高度预算"，超预算就按**优先级**压缩：
+    # 副标题（1 行）→ 标题（2 行）→ 眉题（字号下限）。绝不能靠"整体平移"补救。
     y = y1 - pad
 
+    label_font = load_font(_fs(canvas_h, _FS_EYEBROW), bold=True)
+    brand_font = load_font(_fs(canvas_h, _FS_EYEBROW), bold=True)
+    # 顶部预留：品牌行（若存在）占其行高 + 顶部边距
+    top_reserve = y0 + int(h * 0.045) + (_line_h(brand_font) if brand else 0)
+    # 眉题占位
+    eyebrow_h = int(_line_h(label_font) * 1.6) if eyebrow else 0
+    # 可供标题 + 副标题使用的总高度
+    text_budget = max(0, (y1 - pad) - top_reserve - eyebrow_h)
+
     if subheadline:
-        font_s = _fit_font(subheadline, int(h * 0.050), False, 2)
-        lines = C._wrap_text(subheadline, font_s, max_w)[:2]
-        y -= len(lines) * int(font_s.size * 1.3)
+        font_s = _fit_font(subheadline, _fs(canvas_h, _FS_HERO_SUB), False, 2)
+        lines = _fit_line(subheadline, font_s, max_w, 2)
+        # 副标题是**次要信息**：若与标题相加超出纵向预算，先牺牲它（缩到 1 行）
+        if len(lines) * _line_h(font_s) > text_budget * 0.45:
+            lines = _fit_line(subheadline, font_s, max_w, 1)
+        y -= len(lines) * _line_h(font_s)
         yy = y
         for ln in lines:
             draw.text((tx, yy), ln, font=font_s, fill=_muted(tc))
-            yy += int(font_s.size * 1.3)
+            yy += _line_h(font_s)
 
     if headline:
-        font_h = _fit_font(headline, int(h * 0.130), True, 3)
-        lines = C._wrap_text_balanced(headline, font_h, max_w)[:3]
-        y -= len(lines) * int(font_h.size * 1.14)
+        font_h = _fit_font(
+            headline,
+            _fs(canvas_h, _FS_HERO_TITLE),
+            True,
+            3,
+            max_px=_fs(canvas_h, _FS_HERO_TITLE_MAX),
+        )
+        lines = _fit_line(headline, font_h, max_w, 3)
+        # 标题也不得撑破预算：超出就把上限从 3 行收到 2 行，并逐级缩字号
+        sub_h = (len(_fit_line(subheadline, font_s, max_w, 1)) * _line_h(font_s)
+                 if subheadline else 0)
+        avail_for_head = text_budget - sub_h
+        for _ in range(20):
+            if len(lines) * _line_h(font_h) <= avail_for_head or font_h.size <= _MIN_FONT_PX:
+                break
+            font_h = load_font(max(_MIN_FONT_PX, int(font_h.size * 0.92)), bold=True)
+            lines = _fit_line(headline, font_h, max_w, 3)
+        y -= len(lines) * _line_h(font_h)
         yy = y
         for ln in lines:
             draw.text((tx, yy), ln, font=font_h, fill=tc)
-            yy += int(font_h.size * 1.14)
+            yy += _line_h(font_h)
 
     if eyebrow:
-        font_e = load_font(max(11, int(h * 0.034)), bold=True)
-        y -= int(font_e.size * 2.0)
-        draw.text((tx, y), eyebrow.upper(), font=font_e, fill=_muted(tc))
+        y -= eyebrow_h
+        # 眉题不得高于"品牌行下方"（否则两者重叠）
+        if y < top_reserve:
+            y = top_reserve
+        # 按眉题所在处的实际背景亮度选字色，避免"浅字压浅底"
+        e_lum = C._region_luminance(
+            poster,
+            (int(tx), int(y), int(tx + max_w), int(y + _line_h(label_font))),
+        )
+        e_col = _muted(tc) if e_lum < 140 else (28, 30, 36)
+        draw.text((tx, y), eyebrow.upper(), font=label_font, fill=e_col)
         # 眉题右侧的短横线（参考海报的分隔线）
-        lw = int(font_e.getlength(eyebrow.upper()))
-        line_x = tx + lw + int(font_e.size * 0.7)
-        ly = y + int(font_e.size * 0.5)
-        draw.rectangle([line_x, ly, min(x1 - pad, line_x + int(w * 0.14)), ly + max(2, int(h * 0.005))],
-                       fill=_muted(tc))
+        lw = int(label_font.getlength(eyebrow.upper()))
+        line_x = tx + lw + int(label_font.size * 0.7)
+        ly = y + int(_line_h(label_font) * 0.45)
+        draw.rectangle([line_x, ly, min(x1 - pad, line_x + int(w * 0.14)), ly + max(2, int(canvas_h * 0.005))],
+                       fill=e_col)
 
+    # 顶部左侧品牌行。
+    # 🚨 不要再回退到 `_tag`：`_tag`（category_tag）已作为 `eyebrow` 参数传给本函数、
+    # 渲染在文案区上方，若此处再用同一个字符串，同一张图会出现两处 "AUDIO"
+    # （品类标签语义上是"右上角标签"，不该重复出现在标题区顶部）。
+    # 品牌为空时就**不画**这一行，把空间让给文案。
     if brand:
-        font_b = load_font(max(11, int(h * 0.032)), bold=True)
-        # 品牌行在顶部：hero 顶部可能很亮，按背景亮度选字色，避免"白字压浅底"看不见
+        font_b = load_font(_fs(canvas_h, _FS_EYEBROW), bold=True)
         b_y0 = y0 + int(h * 0.045)
+        # 标签行按背景亮度选字色，避免"白字压浅底"看不见
         bl = C._region_luminance(poster, (int(tx), int(b_y0), int(tx + max_w), int(b_y0 + font_b.size)))
         b_col = (246, 246, 250) if bl < 140 else (28, 30, 36)
         draw.text((tx, b_y0), brand[:30], font=font_b, fill=b_col)
 
 
+def _shrink_to_fit(
+    text: str,
+    start_px: int,
+    max_w: int,
+    max_lines: int,
+    bold: bool = False,
+    min_px: int = _MIN_FONT_PX,
+) -> Any:
+    """从 `start_px` 起逐级缩小字号，直到文本能装进 `max_lines` 行且每行不溢出。
+
+    用于网格/细节带这类**单行本应放下、但个别长词会撑破栏宽**的场景：
+    旧版直接按原字号换行再截断，长标题会被拦腰砍断（实测"A"+"Accessories"残行）。
+    """
+    px = float(start_px)
+    for _ in range(24):
+        f = load_font(max(min_px, int(round(px))), bold=bold)
+        lines = C._wrap_text(text, f, max_w)
+        if len(lines) <= max_lines and all(f.getlength(ln) <= max_w for ln in lines):
+            return f
+        px *= 0.94
+    return load_font(max(min_px, int(round(px))), bold=bold)
+
+
+def _fit_block(
+    segments: list[str],
+    start_px_list: list[int],
+    max_w: int,
+    max_lines_list: list[int],
+    avail_h: int,
+    bold_list: list[bool] | None = None,
+) -> tuple[list[Any], list[list[str]]]:
+    """同时满足**宽度**与**高度**约束，为一组文本段求字号与换行结果。
+
+    🚨 为什么需要它：`_shrink_to_fit` 只管宽度（每行放得下）和行数上限，
+    **完全不看纵向可用高度**。当某个分区的文字段较多（如网格 = 标题 2 行 + 说明 2 行）
+    时，各段各自算出来的行高之和会远超单元格高度，导致**相邻单元格文字互相压叠**
+    （实测：需要 176px，可用仅 76px，第 1、3 格文字重叠成一团）。
+
+    这里对整组文本做一个**缩放因子**搜索：任一"宽度/行数/总高度"约束不满足就整体
+    缩 6%，直到全部满足或触底 `_MIN_FONT_PX`。
+    """
+    bolds = bold_list or [False] * len(segments)
+    k = 1.0
+    for _ in range(30):
+        fonts: list[Any] = []
+        all_lines: list[list[str]] = []
+        ok = True
+        total_h = 0
+        for seg, base, ml, bd in zip(segments, start_px_list, max_lines_list, bolds):
+            px = max(_MIN_FONT_PX, int(round(base * k)))
+            f = load_font(px, bold=bd)
+            lns = C._wrap_text(seg, f, max_w) if seg else []
+            if len(lns) > ml or any(f.getlength(ln) > max_w for ln in lns):
+                ok = False
+                break
+            fonts.append(f)
+            all_lines.append(lns)
+            total_h += len(lns) * _line_h(f)
+        if ok and total_h <= avail_h:
+            return fonts, all_lines
+        k *= 0.94
+    # 触底兜底：按最小字号重新生成一次（保证调用方能拿到可渲染的结果）
+    fonts = [load_font(max(_MIN_FONT_PX, int(round(b * k))), bold=bd)
+             for b, bd in zip(start_px_list, bolds)]
+    all_lines = [C._wrap_text(seg, f, max_w) if seg else []
+                 for seg, f in zip(segments, fonts)]
+    return fonts, all_lines
+
+
 # ---------------------------------------------------------------- ② 卖点网格
+def _draw_check(
+    draw: ImageDraw.ImageDraw,
+    cx: int,
+    cy: int,
+    r: int,
+    color: tuple[int, int, int],
+) -> None:
+    """在圆心 (cx, cy)、半径 r 的圆内画一个对勾记号。
+
+    抽成公共函数是为了让**卖点网格**与**底部场景条**共用同一图标语汇——
+    旧版底栏只画了空圆环，没有任何记号，看起来像"没画完"（视觉不统一）。
+    """
+    cw2 = max(2, int(r * 0.20))
+    pts = [(-0.38, 0.0), (-0.10, 0.28), (0.40, -0.30)]
+    coords = [(cx + int(px * r), cy + int(py * r)) for px, py in pts]
+    draw.line(coords, fill=color, width=cw2, joint="curve")
+
+
 def _draw_sellpoint_grid(
     poster: Image.Image,
     bullets: list[str],
@@ -203,7 +429,14 @@ def _draw_sellpoint_grid(
     """2×2 卖点网格：圆形描边图标 + 粗体小标题 + 一行说明。
 
     卖点文案约定为 `标题|说明`（缺省只有标题）。参考海报的 2×2 是这类
-    电商海报最有辨识度的元素之一。
+    电商海报最有辨识力的元素之一。
+
+    🚨 两处历史事故（2026-10-11 修复）：
+    ① 字号曾按单元格高 `ch*0.24` 计算，实测只有 8px → 改锚定画布总高；
+    ② 各格**独立**算字号，长文本的格子行数多、行高之和超出单元格，
+       于是文字**溢出到下一行单元格并压叠**（实测需要 176px、可用仅 76px）。
+       现改为：**全网格统一一组字号**（视觉整齐），且对"标题 2 行 + 说明 2 行"
+       的总高度做硬约束，装不下就整体缩字号。
     """
     x0, y0, x1, y1 = box
     w = x1 - x0
@@ -213,43 +446,68 @@ def _draw_sellpoint_grid(
     draw = ImageDraw.Draw(poster)
     fg = _text_on(dark)
     pad_x = int(w * 0.05)
-    pad_y = int(h * 0.06)
+    pad_y = int(h * 0.05)
     cols, rows = 2, 2
-    cw = (w - 2 * pad_x) // cols
-    ch = (h - 2 * pad_y) // rows
-    icon_r = int(min(cw, ch) * 0.15)
-    font_t = load_font(max(11, int(ch * 0.24)), bold=True)
-    font_d = load_font(max(9, int(ch * 0.16)))
+    cell_w = (w - 2 * pad_x) // cols
+    cell_h = (h - 2 * pad_y) // rows
 
-    for i, b in enumerate(bullets[:4]):
-        r, c = divmod(i, cols)
-        cx = x0 + pad_x + c * cw
-        cy = y0 + pad_y + r * ch
-        icon_cx = cx + icon_r
-        icon_cy = cy + icon_r
-        # 圆形描边图标（放大镜/对勾等用统一圆环 + 简单记号，避免字体依赖）
-        draw.ellipse(
-            [icon_cx - icon_r, icon_cy - icon_r, icon_cx + icon_r, icon_cy + icon_r],
-            outline=accent, width=max(2, int(icon_r * 0.22)),
-        )
-        # 圆内一个小对勾
-        cw2 = max(2, int(icon_r * 0.20))
-        pts = [(-0.38, 0.0), (-0.10, 0.28), (0.40, -0.30)]
-        coords = [(icon_cx + int(px * icon_r), icon_cy + int(py * icon_r)) for px, py in pts]
-        draw.line(coords, fill=accent, width=cw2, joint="curve")
+    # 🚨 图标不能太占地方：2×2 网格在 1:1 画布上每格仅 ~486×127px，若图标按
+    # "短边 13%" 取半径（~16px、直径 32px），留给文字的高度会被压到 65px，
+    # 连"标题 + 说明"都放不下 → 高度约束反过来把字号压到 17px（低于可读地板）。
+    # 这里把图标半径压到单元格高的 1/8（约 14px），且直径不超过高度的 22%。
+    max_icon_r = max(5, min(int(min(cell_w, cell_h) * 0.10), int(cell_h * 0.11)))
+    # 文字可用高度 = 单元格高 - 图标直径 - 上下呼吸位
+    avail_h = max(24, cell_h - 2 * max_icon_r - int(cell_h * 0.10))
 
+    # 统一求一组字号：取"全网格最长的标题/说明"作为约束（保证等大且都不越界）
+    items: list[tuple[str, str]] = []
+    for b in bullets[:4]:
         parts = [p.strip() for p in str(b).split("|", 1)]
-        title = parts[0]
-        desc = parts[1] if len(parts) > 1 else ""
-        ty = icon_cy + icon_r + int(ch * 0.10)
-        for ln in C._wrap_text(title, font_t, cw - icon_r)[:2]:
+        items.append((parts[0], parts[1] if len(parts) > 1 else ""))
+    longest_t = max((t for t, _ in items), key=len, default="")
+    longest_d = max((d for _, d in items), key=len, default="")
+
+    canvas_h = poster.size[1]
+    # 说明文字有左侧缩进（对齐图标），其可用宽度略窄于标题
+    desc_indent = int(max_icon_r * 0.4)
+    title_w = cell_w - max_icon_r
+    desc_w = cell_w - desc_indent
+    fonts, _ = _fit_block(
+        [longest_t, longest_d],
+        [_fs(canvas_h, _FS_GRID_TITLE), _fs(canvas_h, _FS_GRID_DESC)],
+        title_w,
+        [2, 2],
+        avail_h,
+        [True, False],
+    )
+    font_t, font_d = fonts[0], fonts[1]
+
+    for i, (title, desc) in enumerate(items):
+        r, c = divmod(i, cols)
+        cx = x0 + pad_x + c * cell_w
+        cy = y0 + pad_y + r * cell_h
+        icon_cx = cx + max_icon_r
+        icon_cy = cy + max_icon_r
+        draw.ellipse(
+            [icon_cx - max_icon_r, icon_cy - max_icon_r,
+             icon_cx + max_icon_r, icon_cy + max_icon_r],
+            outline=accent, width=max(2, int(max_icon_r * 0.22)),
+        )
+        _draw_check(draw, icon_cx, icon_cy, max_icon_r, accent)
+
+        t_lines = _fit_line(title, font_t, title_w, 2)
+        d_lines = _fit_line(desc, font_d, desc_w, 2) if desc else []
+        # 纵向：图标 → 标题 → 说明；整体在单元格剩余空间内垂直居中
+        text_h = len(t_lines) * _line_h(font_t) + len(d_lines) * _line_h(font_d)
+        top = icon_cy + max_icon_r
+        avail_below = (cy + cell_h) - top
+        ty = top + max(0, (avail_below - text_h) // 2)
+        for ln in t_lines:
             draw.text((cx, ty), ln, font=font_t, fill=fg)
-            ty += int(font_t.size * 1.18)
-        if desc:
-            ty += int(ch * 0.02)
-            for ln in C._wrap_text(desc, font_d, cw - int(icon_r * 0.4))[:2]:
-                draw.text((cx + int(icon_r * 0.4), ty), ln, font=font_d, fill=_muted(fg))
-                ty += int(font_d.size * 1.2)
+            ty += _line_h(font_t)
+        for ln in d_lines:
+            draw.text((cx + desc_indent, ty), ln, font=font_d, fill=_muted(fg))
+            ty += _line_h(font_d)
 
 
 # ---------------------------------------------------------------- ③ 细节四格
@@ -276,7 +534,11 @@ def _draw_detail_strip(
     pad_x = int(w * 0.03)
     pad_y = int(h * 0.08)
     cell_w = (w - 2 * pad_x - gap * (n - 1)) // n
-    cap_h = int(h * 0.22)
+    # 标题带高度按**画布字号 + 真实行高**反推，而不是按分区高度的固定比例——
+    # 否则字号调大后标题会顶到图片下沿（旧版 cap_h=h*0.22 时标题会压到图上）。
+    cap_font_px = _fs(poster.size[1], _FS_DETAIL_CAP)
+    cap_line = _line_h(load_font(cap_font_px, bold=True))
+    cap_h = cap_line + int(h * 0.10)
     img_h = h - 2 * pad_y - cap_h
 
     for i in range(n):
@@ -290,15 +552,15 @@ def _draw_detail_strip(
         cell = cell.crop(((nw - cell_w) // 2, (nh - img_h) // 2,
                           (nw - cell_w) // 2 + cell_w, (nh - img_h) // 2 + img_h))
         poster.paste(cell, (cx, cy))
-        # 细节图下方标题
+        # 细节图下方标题（字号锚定画布总高；长标题自动缩到单行放得下）
         cap = captions[i] if i < len(captions) else ""
         if cap:
-            font_c = load_font(max(10, int(cap_h * 0.42)), bold=True)
+            font_c = _shrink_to_fit(cap, _fs(poster.size[1], _FS_DETAIL_CAP), cell_w, 1, bold=True)
             ty = cy + img_h + int(cap_h * 0.18)
-            for ln in C._wrap_text(cap, font_c, cell_w)[:2]:
+            for ln in _fit_line(cap, font_c, cell_w, 1):
                 lw = int(font_c.getlength(ln))
                 draw.text((cx + (cell_w - lw) // 2, ty), ln, font=font_c, fill=fg)
-                ty += int(font_c.size * 1.2)
+                ty += _line_h(font_c)
 
 
 # ---------------------------------------------------------------- ④ 底部导航条
@@ -310,7 +572,10 @@ def _draw_scene_footer(
     dark: tuple[int, int, int],
     accent: tuple[int, int, int],
 ) -> None:
-    """底部深色场景导航条：图标 + 场景词（Music/Study/Gaming/Work 式）。"""
+    """底部深色场景导航条：图标 + 场景词（Music/Study/Gaming/Work 式）。
+
+    字号锚定画布总高；圆环内补对勾记号，与卖点网格共用同一图标语汇。
+    """
     x0, y0, x1, y1 = box
     w = x1 - x0
     h = y1 - y0
@@ -321,15 +586,25 @@ def _draw_scene_footer(
     if n == 0:
         return
     seg = w / n
-    font_s = load_font(max(10, int(h * 0.30)))
-    icon_r = int(h * 0.20)
+    # 场景词按本格可用宽度自动缩字号（旧版固定字号，长词如 "Office work" 会被右侧截断）
+    gap = int(seg * 0.16)
+    icon_r = max(6, int(h * 0.20))
     for i, sc in enumerate(scenes[:4]):
         cx = int(seg * (i + 0.5))
-        # 小圆点图标
-        draw.ellipse([cx - icon_r - int(seg * 0.16), y0 + h // 2 - icon_r,
-                      cx - int(seg * 0.16) + icon_r, y0 + h // 2 + icon_r],
+        icon_cx = cx - gap
+        icon_cy = y0 + h // 2
+        avail_w = int(seg * 0.5) - icon_r
+        font_s = _shrink_to_fit(str(sc), _fs(poster.size[1], _FS_FOOTER), avail_w, 2)
+        # 小圆点图标（+ 与网格同款对勾，保持图标族一致）
+        draw.ellipse([icon_cx - icon_r, icon_cy - icon_r, icon_cx + icon_r, icon_cy + icon_r],
                      outline=accent, width=max(2, int(icon_r * 0.3)))
-        draw.text((cx, y0 + (h - font_s.size) // 2), str(sc), font=font_s, fill=fg)
+        _draw_check(draw, icon_cx, icon_cy, icon_r, accent)
+        lines = _fit_line(str(sc), font_s, avail_w, 2)
+        lh = _line_h(font_s)
+        ty = icon_cy - (len(lines) * lh) // 2
+        for ln in lines:
+            draw.text((cx, ty), ln, font=font_s, fill=fg)
+            ty += lh
 
 
 # ---------------------------------------------------------------- 主入口
@@ -342,6 +617,7 @@ def compose_poster(
     size_preset: str,
     bullets: list[str] | None = None,
     detail_image_bytes: list[bytes] | None = None,
+    detail_captions: list[str] | None = None,
     scenes: list[str] | None = None,
     tagline: str = "",
 ) -> Image.Image:
@@ -386,7 +662,12 @@ def compose_poster(
     if has_details:
         dbox = (0, y, W, y + sec["details"])
         ImageDraw.Draw(poster).rectangle([dbox[0], dbox[1], dbox[2], dbox[3]], fill=dark)
-        caps = [str(b).split("|")[0] for b in (bullets or [])][:4]
+        # 细节带标题优先用调用方显式传入的 detail_captions（细节向文案）；
+        # 缺失时回退到卖点标题（旧行为）。
+        if detail_captions:
+            caps = [str(c).strip() for c in detail_captions][:4]
+        else:
+            caps = [str(b).split("|")[0] for b in (bullets or [])][:4]
         _draw_detail_strip(poster, detail_imgs, caps, dbox, dark)
         y += sec["details"]
 

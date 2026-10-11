@@ -171,6 +171,7 @@ def poster_compose(
     size_preset: str,
     bullets: list[str] | None = None,
     detail_image_bytes: list[bytes] | None = None,
+    detail_captions: list[str] | None = None,
     scenes: list[str] | None = None,
     tagline: str = "",
 ) -> str:
@@ -186,6 +187,7 @@ def poster_compose(
         size_preset,
         bullets=bullets,
         detail_image_bytes=detail_image_bytes,
+        detail_captions=detail_captions,
         scenes=scenes,
         tagline=tagline,
     )

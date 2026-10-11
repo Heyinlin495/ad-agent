@@ -417,6 +417,12 @@ def prompt_gen_node(state: AgentState) -> dict[str, Any]:
             for p in core_points
             if isinstance(p, dict) and str(p.get("point") or "").strip()
         ][:4]
+    # 细节四格标题：LLM 专为"材质/结构/工艺/配件"特写写的 4 条标题，避免与卖点网格重复
+    dcaps = result.get("detail_captions") or []
+    if isinstance(dcaps, list):
+        cleaned = [str(c).strip() for c in dcaps if str(c).strip()]
+        if cleaned:
+            result["_detail_captions"] = cleaned[:4]
     return {"design": result}
 
 
@@ -584,19 +590,28 @@ def _imagegen_instruction(product: dict[str, Any], design: dict[str, Any]) -> st
 def _detail_prompts(product: dict[str, Any], design: dict[str, Any]) -> list[tuple[str, str]]:
     """为"细节四格"生成 4 组 (标题, 出图提示词)。
 
-    标题取自卖点（`标题|说明` 的标题段），最多 4 个；不足 4 个时用通用细节角度补齐
-    （外观/材质/做工/配件），保证细节带不空。出图提示词描述该卖点对应的**产品特写**。
+    🚨 标题来源优先级：`design["_detail_captions"]`（LLM 专为细节图写的"细节向"标题，
+    描述材质/结构/工艺/配件）→ 卖点标题 → 通用兜底。
+
+    历史事故：旧版直接复用卖点标题前 4 条，导致**细节带与上方 2×2 卖点网格逐字重复**
+    （同一张海报里 "Lightweight comfort for hours" 出现两次），且语义错位——细节图拍的是
+    "材质/结构"特写，配文却是"使用体验"卖点，图文不符。
     """
     name = str(product.get("name") or product.get("category") or "the product").strip()
     color = str(product.get("color") or "").strip()
     material = str(product.get("material") or "").strip()
     subject = " ".join(p for p in [color, material, name] if p).strip()
 
-    bullets = [str(b).strip() for b in (design.get("_bullets") or []) if str(b).strip()]
-    titles = [b.split("|", 1)[0].strip() for b in bullets][:4]
-    fallbacks = ["Premium Finish", "Fine Craftsmanship", "Built to Last", "In the Box"]
-    while len(titles) < 4:
-        titles.append(fallbacks[len(titles)])
+    # 首选：LLM 专门为细节图产出的标题（与卖点网格解耦）
+    captions = [str(c).strip() for c in (design.get("_detail_captions") or []) if str(c).strip()]
+    if len(captions) >= 4:
+        titles = captions[:4]
+    else:
+        bullets = [str(b).strip() for b in (design.get("_bullets") or []) if str(b).strip()]
+        titles = [b.split("|", 1)[0].strip() for b in bullets][:4]
+        fallbacks = ["Premium Finish", "Fine Craftsmanship", "Built to Last", "In the Box"]
+        while len(titles) < 4:
+            titles.append(fallbacks[len(titles)])
 
     angles = [
         "extreme close-up macro shot focusing on the surface material and texture",
@@ -650,8 +665,20 @@ def _render_poster(
 
     emit(97, "image_compose")
     hero_bullets = copy0.get("bullets", []) or []
-    # 卖点网格用 标题|说明；细节标题复用卖点标题，保证两处措辞一致
+    # 卖点网格用 标题|说明（取标题段作展示）
     grid_bullets = list(hero_bullets)[:4]
+    grid_titles = {str(b).split("|", 1)[0].strip().lower() for b in grid_bullets}
+    # 细节带标题：优先用 LLM 的 detail_captions（材质/结构向，与卖点网格解耦）；
+    # 若与卖点标题撞车则弃用该条，回退到实际生成的 detail_titles，避免同图重复。
+    caps: list[str] = []
+    for i in range(len(details)):
+        t = detail_titles[i] if i < len(detail_titles) else ""
+        if t and t.strip().lower() not in grid_titles:
+            caps.append(t)
+        else:
+            fallbacks = ["Premium Finish", "Fine Craftsmanship", "Built to Last", "In the Box"]
+            alt = fallbacks[i] if i < len(fallbacks) else "Detail View"
+            caps.append(alt)
     scenes = [str(s).strip() for s in (product.get("scenes") or []) if str(s).strip()][:4]
 
     image_url = poster_compose(
@@ -663,6 +690,7 @@ def _render_poster(
         size_preset,
         bullets=grid_bullets,
         detail_image_bytes=details or None,
+        detail_captions=caps or None,
         scenes=scenes or None,
         tagline=(
             f"{(design.get('_brand') or '').strip()}, "
