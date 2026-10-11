@@ -153,7 +153,15 @@ jobs:
               echo '  !! .docker.env 文件不存在（部署未写成功或 secret 为空）'
             fi
             cd "$APP_DIR"
-            # 清理可能占用 8000/8502 端口的残留容器，防止 "port is already allocated"
+            # ① 先把新镜像拉下来 —— 这一步**必须在删除运行中容器之前**！
+            #    2026-10-11 事故：原顺序（先 down 再 pull）在 pull 阶段因拉不到 Docker Hub
+            #    的 caddy 镜像而中止（服务器 IPv6 不可达 connect: network is unreachable），
+            #    结果容器已全删、服务却未拉起，线上长时间 502。调换顺序后，pull 失败时
+            #    旧容器仍在运行，服务不中断。
+            #    `--ignore-pull-failures`：单个镜像（如 caddy）拉取失败不阻断整轮部署。
+            echo '== 拉取镜像（先于删除容器）=='
+            S docker compose -f docker-compose.deploy.yml pull --ignore-pull-failures
+            # ② 清理可能占用 8000/8502 端口的残留容器，防止 "port is already allocated"
             # （先 down 移除本项目 compose 管理的容器；再按名强删，兼容历史不同 project 的遗留）
             S docker compose -f docker-compose.deploy.yml down >/dev/null 2>&1 || true
             for c in ad-agent-backend ad-agent-web ad-agent-redis ad-agent-postgres; do
@@ -179,7 +187,6 @@ jobs:
             else
               echo '!! 未找到 ad_data 卷（首次部署会由 compose 创建）'
             fi
-            S docker compose -f docker-compose.deploy.yml pull
             S docker compose -f docker-compose.deploy.yml up -d --remove-orphans
             # 新镜像已进入运行态（in-use）后，回收上一版镜像/悬空层才安全——放在 pull 之后，
             # 既清掉了旧镜像占用的磁盘，又不会破坏下一次 pull 的层复用。

@@ -101,6 +101,13 @@ services:
   # 注：network_mode: host 使容器可直连宿主 Caddy admin API (127.0.0.1:2019)。
   # ------------------------------------------------------------
   caddy-subdomain:
+    # 🚨 默认不随 `compose pull / up` 执行（2026-10-11 事故修复）。
+    #    本服务只是「首次把 agent 子域接入宿主 Caddy」的幂等 one-shot，域名早已接入。
+    #    它依赖拉取 Docker Hub 的 caddy 镜像，而服务器曾因 IPv6 不可达导致
+    #    `compose pull` 整体失败——又因 pull 原在容器删除之后，直接造成
+    #    「容器已下、服务未起」的线上空窗。移入独立 profile 后默认流程不再触碰它。
+    #    需要重做子域接入时：docker compose -f docker-compose.deploy.yml --profile caddy run --rm caddy-subdomain
+    profiles: ["caddy"]
     image: caddy:2-alpine
     container_name: ad-agent-caddy-subdomain
     restart: "no"
