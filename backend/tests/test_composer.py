@@ -159,10 +159,19 @@ def test_balanced_wrap_removes_orphan_without_shrinking():
     """
     text = "沉浸式听觉盛宴"
     font = composer.load_font(150, bold=True, text=text)
-    # 栏宽取"前 len-1 个字刚好放得下"：贪心排成 N/N/N…/1，末行必为孤字。
-    width = int(font.getlength(text[:-1]))
-    if width <= 0:                      # 字体无法度量中文（无 CJK 字形），用例不适用
+    if font.getlength(text) <= 1:       # 字体无 CJK 字形（度量恒为 0），用例不适用
         pytest.skip("当前字体无法度量中文，跳过孤字用例")
+    # 从大到小搜一个"贪心必然留下独字末行"的栏宽。不同字体每行能容纳的字数不同
+    # （本机 msyh 在 500px 下排 3/3/1 有孤字，CI 的 CJK 字体排 3/2/2 无孤字），
+    # 写死栏宽会随字体漂移而假红；也不能用 int(getlength(text[:-1]))——浮点截断会让
+    # 第 len-1 个字差不到 1px 放不下（实测 CI 得到 5+2 而非 6+1）。
+    width = None
+    for w in range(int(font.getlength(text)), 1, -1):
+        lines = composer._wrap_text(text, font, w)
+        if len(lines) >= 2 and len(lines[-1].strip()) == 1:
+            width = w
+            break
+    assert width is not None, "当前字体下找不到会产生孤字的栏宽，用例失效"
     greedy = composer._wrap_text(text, font, width)
     assert len(greedy) >= 2 and len(greedy[-1].strip()) <= 1, (
         f"前置条件不成立：贪心换行本应产生孤字，实际 {greedy!r}")
