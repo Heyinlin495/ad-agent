@@ -13,7 +13,10 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-def health() -> dict:
+def health(request: Request) -> dict:
+    # 字体自检结果（启动期写入 app.state）：False 表示出图文字会退化为固定 10px。
+    # 这是"能启动但产出全废"的静默故障，必须能被监控直接看到。
+    font_st = getattr(request.app.state, "font_status", None) or {}
     return ok(
         {
             "status": "ok",
@@ -22,6 +25,8 @@ def health() -> dict:
             "environment": settings.environment,
             "mock_mode": settings.mock_mode,
             "time": datetime.utcnow().isoformat(),
+            "fonts_ok": bool(font_st.get("ok", False)),
+            "font_latin": font_st.get("latin_bold") or font_st.get("latin_regular") or "",
         }
     )
 

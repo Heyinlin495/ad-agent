@@ -55,6 +55,24 @@ RUN if [ "$BUILD_DEPS" = "full" ]; then \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
+# 🚨 字体：core 与 full **都必须装**。
+# 背景（2026-10-12 线上事故）：`app/image/fonts.py` 找不到任何字体文件时会**静默**
+# 回退 `ImageFont.load_default()`，而该字体**固定 10px、完全忽略传入的 size**——
+# 于是整条出图链路（海报大标题本应 140px、网格 32px…）的文字全部变成 10px，
+# 日志里没有任何线索。slim 基镜默认不含字体，`/usr/share/fonts` 根本不存在。
+#   · fonts-dejavu-core —— 拉丁正文/粗体（体积极小）
+#   · fonts-noto-cjk    —— 中文文案兜底（商品名/场景词可能是中文）
+# 末尾两条 `test -f` 是**构建期门禁**：字体没装成，构建直接失败，
+# 绝不允许把"文字全 10px"的镜像推上线。
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       fonts-dejavu-core \
+       fonts-noto-cjk \
+  && rm -rf /var/lib/apt/lists/* \
+  && test -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
+  && test -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
+  && echo "---> 字体就绪：$(find /usr/share/fonts -type f \( -name '*.ttf' -o -name '*.ttc' \) | wc -l) 个字体文件"
+
 # 只拷贝已安装好的依赖与产物，不重复 pip 环节（多阶段关键收益）
 COPY --from=builder /opt/venv /opt/venv
 COPY . /app

@@ -43,6 +43,17 @@ async def lifespan(app: FastAPI):
     from app.core.security import run_security_audit
 
     run_security_audit()
+    # 启动期字体自检：缺字体时 `load_font()` 会静默退化为固定 10px 的默认字体，
+    # 属于"进程能起、产出全废"的静默故障（2026-10-12 线上事故）。这里显式打日志，
+    # 并把结果挂到 app.state 供 /health 暴露，避免再次无声上线。
+    from app.image.fonts import describe_font_status, font_status
+
+    _font_st = font_status()
+    app.state.font_status = _font_st
+    if _font_st["ok"]:
+        logger.info("字体自检通过：{}", describe_font_status())
+    else:
+        logger.error("字体自检未通过：{}", describe_font_status())
     init_db()
     # 确保存储目录存在
     Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)

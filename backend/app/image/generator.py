@@ -13,6 +13,9 @@ from app.core.config import settings
 # 复用一个 Client 以复用 TCP 连接（连接池）；各请求可单独覆盖 timeout
 _http_client = httpx.Client(timeout=120)
 
+# 细节四格的生成画幅（3:2）。万相会按 `_wanx_size` 保持长宽比 → 1440×960。
+_DETAIL_TILE_PX = (1200, 800)
+
 # 尺寸预设（宽, 高）
 SIZE_PRESETS: dict[str, tuple[int, int]] = {
     "1:1": (1080, 1080),
@@ -20,6 +23,10 @@ SIZE_PRESETS: dict[str, tuple[int, int]] = {
     "9:16": (1080, 1920),
     "16:9": (1920, 1080),
     "amazon": (2000, 2000),
+    # 细节四格的专用画幅：与 `poster.DETAIL_TILE_ASPECT`(3:2) 一致。
+    # 旧版四格是「生成 1:1 → 渲染时裁成 239×111(2.15:1)」，纵向丢掉 53.6%，
+    # 被标题点名的部件（接口/配件）往往正好落在被切掉的部分里。
+    "detail": (_DETAIL_TILE_PX[0], _DETAIL_TILE_PX[1]),
 }
 
 

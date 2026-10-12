@@ -140,14 +140,29 @@
   标题 ≤ 4 个词、说明 ≤ 8 个词。例：`Clear Sound|Enjoy every detail`、
   `3.5mm Jack|Wide compatibility`。缺说明时也要保留竖线（`标题|`）。
 - 至少给 4 条卖点（覆盖外观/功能/材质/配件四个角度），供海报的**卖点网格(4)** 复用。
+- 🚨 **四条卖点的字数要尽量接近**（标题之间、说明之间各差 ≤1 个词）。海报的卖点网格
+  是严格 2×2、四格共用同一组字号与基线；某一条明显更长会折成两行，与相邻格的行数
+  不一致，视觉重心就歪了（实测"第一条两行、第二条一行"）。**宁可都短，也不要一长一短**。
 
 【细节四格标题（detail_captions，必填 4 条）】
 - 细节四格是 4 张**产品特写**（材质纹理 / 结构做工 / 耐用性 / 配件接口），
   它们的标题必须描述**画面里看得见的东西**，不要写成使用体验或功能承诺。
+- 🚨 **标题会直接决定这一格拍什么**（系统把标题里的部件名原样写进出图提示词），
+  所以每条标题都必须点名一个**具体、肉眼可见的部件**，而不是抽象评价。
+  ✅ 好：`PU Leather Cushions`、`Metal Adjustment Rails`、`Reinforced Boom Arm`、
+  `Included Accessories`；❌ 差：`Premium Quality`、`Built to Last`、`Great Comfort`
+  （后者无法指导取景，模型只会给出一张"整机 + 灰底"）。
+- 四条标题对应的取景**必须彼此明显不同**（不同部位 / 不同视角），
+  不要写成同一部位换个说法（`Textured Surface` 与 `Surface Detail` 视为重复）。
 - 输出 4 条英文短标题（每条 ≤ 4 个词），严格按以下顺序对应四格画面：
   ① 材质纹理 → 如 `Textured Surface`；② 结构做工 → 如 `Precision Stitching`；
   ③ 耐用性 → 如 `Reinforced Build`；④ 配件接口 → 如 `Included Accessories`。
 - **禁止**与卖点网格的标题重复（同一张海报里不得出现两处相同文字）。
+- **禁止编造规格与参数**：只能写商品信息中**已经出现**的材质、结构、配件；不确定时用
+  泛化措辞（如 `Included Accessories`、`Secure Connection`、`Smooth Finish`）。
+  **不要**写具体接口、型号或参数（`Dual 3.5mm & USB`、`USB-C`、`Bluetooth 5.0`、`5000mAh`…）：
+  编出来的参数属于虚假宣传，且常常与主图商品对不上。系统会校验并丢弃含"未在商品信息中
+  出现过"的规格词的标题，改用通用兜底标题。
 
 ==========================================================
 # 四、负面提示词
@@ -171,7 +186,7 @@ negative_prompt 必须包含（用英文，逗号分隔）：people, person, hum
   "text_area": "文字区域位置（top|bottom|left|right）",
   "template_id": "版式模板 ID（magazine=穿戴上品；hero=其他品类）",
   "poster_mode": "是否产出多分区电商宣传海报（true|false，默认 true）",
-  "detail_captions": ["细节四格标题，恰好 4 条英文短标题（≤4 词），依次对应 材质纹理/结构做工/耐用性/配件接口 四个特写角度；不得与卖点标题重复"],
+  "detail_captions": ["细节四格标题，恰好 4 条英文短标题（≤4 词），依次对应 材质纹理/结构做工/耐用性/配件接口 四个特写角度；不得与卖点标题重复；不得出现商品信息里没有的具体规格/接口/参数"],
   "product_placement": {"position": "主体位置（如 center-right）", "scale": "主体占画面比例（0.60-0.78）"}
 }
 

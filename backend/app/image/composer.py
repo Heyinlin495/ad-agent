@@ -349,7 +349,7 @@ def _tpl_centered(canvas, subject, design, texts, text_color):
 
     headline_region = (int(w * 0.08), band_top, int(w * 0.92), h)
     tc = _text_color_for(canvas, headline_region)
-    font_h = load_font(int(h * 0.052), bold=True, rtl=_is_rtl(texts["headline"]))
+    font_h = load_font(int(h * 0.052), bold=True, rtl=_is_rtl(texts["headline"]), text=texts["headline"])
     font_s = load_font(int(h * 0.028))
     draw = ImageDraw.Draw(canvas)
     y = int(h * 0.725)
@@ -370,7 +370,7 @@ def _tpl_left_text(canvas, subject, design, texts, text_color):
     region = (int(w * 0.05), int(h * 0.18), int(w * 0.45), int(h * 0.86))
     tc = _text_color_for(canvas, region)
     draw = ImageDraw.Draw(canvas)
-    font_h = load_font(int(h * 0.055), bold=True, rtl=_is_rtl(texts["headline"]))
+    font_h = load_font(int(h * 0.055), bold=True, rtl=_is_rtl(texts["headline"]), text=texts["headline"])
     font_s = load_font(int(h * 0.03))
     x = int(w * 0.07)
     y = int(h * 0.24)
@@ -397,7 +397,7 @@ def _tpl_promo_badge(canvas, subject, design, texts, text_color):
     band_top = int(h * 0.70)
     _draw_text_band(canvas, (int(w * 0.06), band_top, int(w * 0.94), h - int(h * 0.03)), int(h * 0.03), _band_color_for(canvas, (0, band_top, w, h)))
     tc = _text_color_for(canvas, (int(w * 0.08), band_top, int(w * 0.92), h))
-    font_h = load_font(int(h * 0.05), bold=True, rtl=_is_rtl(texts["headline"]))
+    font_h = load_font(int(h * 0.05), bold=True, rtl=_is_rtl(texts["headline"]), text=texts["headline"])
     y = int(h * 0.725)
     _draw_text_block(draw, texts["headline"], font_h, int(w * 0.08), y, int(w * 0.84), tc, align="center", stroke=1, stroke_color=tc)
 
@@ -413,7 +413,7 @@ def _tpl_compare(canvas, subject, design, texts, text_color):
     draw = ImageDraw.Draw(canvas)
     x = int(w * 0.54)
     y = int(h * 0.18)
-    font_h = load_font(int(h * 0.048), bold=True, rtl=_is_rtl(texts["headline"]))
+    font_h = load_font(int(h * 0.048), bold=True, rtl=_is_rtl(texts["headline"]), text=texts["headline"])
     y = _draw_text_block(draw, texts["headline"], font_h, x, y, int(w * 0.40), tc, stroke=1, stroke_color=tc)
     font_b = load_font(int(h * 0.03))
     y += int(h * 0.03)
@@ -546,7 +546,7 @@ def _hero_text_layout(
         right = max(right, x + int(fb.getlength(shown)))
         y += int(fb.size * 1.7)
 
-    font_h = load_font(max(14, int(h * 0.075 * s)), bold=True, rtl=_is_rtl(texts["headline"]))
+    font_h = load_font(max(14, int(h * 0.075 * s)), bold=True, rtl=_is_rtl(texts["headline"]), text=texts["headline"])
     if texts["headline"]:
         # 标题用均衡换行：窄栏 + 大字号下贪心换行极易留下孤字末行（"…/宴"）。
         # 均衡换行能在**不改字号**的前提下消除孤字，比"为了躲孤字而降字号"更划算。
@@ -1023,7 +1023,7 @@ def _tpl_minimal(canvas, subject, design, texts, text_color):
     w, h = canvas.size
     _paste_subject(canvas, subject, box_ratio=design.get("_subject_scale", 0.62), center=(0.5, 0.44))
     draw = ImageDraw.Draw(canvas)
-    font_h = load_font(int(h * 0.045), bold=True, rtl=_is_rtl(texts["headline"]))
+    font_h = load_font(int(h * 0.045), bold=True, rtl=_is_rtl(texts["headline"]), text=texts["headline"])
     y = int(h * 0.78)
     _draw_text_block(draw, texts["headline"], font_h, int(w * 0.12), y, int(w * 0.76), (30, 30, 30), align="center")
 
@@ -1709,6 +1709,9 @@ def _tpl_hero_overlay(
     if scrim:
         tc = _text_color_for(canvas, region)
     accent = _pick_accent(design, tc)
+    # 回传最终字色：既便于线上排查"文案为什么看不清"，也让对比度回归测试
+    # 能直接断言"最终结果可读"，而不用去猜实现细节（见 tests/test_composer.py）。
+    design["_text_color"] = list(tc)
     _hero_draw(canvas, best["items"], ty0, tc, accent)
 
     # _text_box 用**真实内容框**（含 CTA 按钮宽度），不含右侧空白——

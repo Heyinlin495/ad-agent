@@ -59,6 +59,17 @@ def _text_line_heights(img: Image.Image, y0: int, y1: int, thresh: int = 150) ->
 
 
 def main() -> int:
+    # 🚨 字体门禁（2026-10-12）：`load_font()` 找不到字体时会静默退化为固定 10px
+    # 的默认字体，此时渲染出来的"行高"看着正常，但字号验证毫无意义——是**假绿**。
+    # Windows 有 msyh.ttc 兜底，线上 slim 容器没有，所以必须显式挡住。
+    from app.image.fonts import describe_font_status, font_status
+
+    fst = font_status()
+    print(describe_font_status())
+    if not fst["ok"]:
+        print("FAIL: 环境缺字体，字号验证不可信（请先装 fonts-dejavu-core / fonts-noto-cjk）")
+        return 2
+
     design = {
         "palette": ["#1C1E26", "#B08A54"],
         "_brand": "",              # 故意留空：验证回退到 _tag
@@ -93,10 +104,28 @@ def main() -> int:
     print(f"画布 {W}x{H}")
 
     # 分区高度
-    from app.image.poster import _section_heights
+    from app.image.poster import (
+        _FS_DETAIL_CAP,
+        _FS_FOOTER,
+        _FS_GRID_DESC,
+        _FS_GRID_TITLE,
+        _fs,
+        _section_heights,
+    )
 
     sec = _section_heights(H, True, True, True)
     print("分区高度:", {k: f"{v}px({v/H*100:.1f}%)" for k, v in sec.items()})
+
+    # 主视觉「文字 / 商品分区」：文字必须落在固定的文字列内，另一侧留给商品。
+    side = design.get("_hero_text_side")
+    col_w = design.get("_hero_text_col_w")
+    ratio_h = design.get("_hero_text_ratio")
+    lim = int(W * 0.66)
+    print(
+        f"主视觉文字侧={side} 文案列宽={col_w}px 文案块占比={ratio_h}"
+        f"  ->  {'PASS' if (col_w or 0) <= lim else 'FAIL'}"
+    )
+    ok_col = bool(side) and (col_w or 0) <= lim
 
     y = sec["hero"]
     grid_runs = _text_line_heights(img, y, y + sec["grid"])
@@ -108,16 +137,34 @@ def main() -> int:
     ft_runs = _text_line_heights(img, y, H)
     print(f"底栏文字行高: {ft_runs}")
 
+    # 🚨 判据分两层，避免"只对某一种字体的墨高成立"：
+    #   ① 名义字号（我们真正控制的量）不得低于画布高 1.8%；
+    #   ② 真实渲染的墨高不得相对名义字号塌陷——`ImageFont.load_default()`
+    #      无视传入字号，名义 32px / 墨高 10px，会在这里被抓到。
+    nominals = {
+        "grid_title": _fs(H, _FS_GRID_TITLE),
+        "grid_desc": _fs(H, _FS_GRID_DESC),
+        "detail_cap": _fs(H, _FS_DETAIL_CAP),
+        "footer": _fs(H, _FS_FOOTER),
+    }
     floor = H * 0.018
-    print(f"可读性地板 = {floor:.1f}px")
+    print(f"名义字号: {nominals}  地板 = {floor:.1f}px")
     body = [h for h in (grid_runs + det_runs) if h > 3]
     worst = min(body) if body else 0
-    print(f"正文最小行高 = {worst}px  ->  {'PASS' if worst >= floor else 'FAIL'}")
+    exp_ink = min(_fs(H, _FS_GRID_DESC), _fs(H, _FS_DETAIL_CAP)) * 0.55
+    ok_nominal = min(nominals.values()) >= floor
+    ok_ink = worst >= exp_ink
+    print(f"正文最小墨高 = {worst}px（下限 {exp_ink:.1f}px）")
+    print(
+        f"名义字号地板 {'PASS' if ok_nominal else 'FAIL'}"
+        f" / 墨高地板 {'PASS' if ok_ink else 'FAIL'}"
+        f" / 文字分区 {'PASS' if ok_col else 'FAIL'}"
+    )
 
     out = Path(__file__).resolve().parent.parent / "poster_probe.png"
     img.save(out)
     print(f"已保存 {out}")
-    return 0 if worst >= floor else 1
+    return 0 if (ok_nominal and ok_ink and ok_col) else 1
 
 
 if __name__ == "__main__":

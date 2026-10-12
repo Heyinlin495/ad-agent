@@ -33,6 +33,10 @@ from app.agents.tools import (
     rag_search,
 )
 from app.core.exceptions import NotFoundError
+from app.image.detail_tiles import (
+    DETAIL_ASPECT_RATIO,
+    detail_base_variants,
+)
 from app.prompts import render_prompt
 from app.services.llm import get_llm
 
@@ -410,6 +414,13 @@ def prompt_gen_node(state: AgentState) -> dict[str, Any]:
         result["poster_mode"] = True
     else:
         result["poster_mode"] = bool(result.get("poster_mode"))
+    # 🚨 海报模式下主视觉文案恒占**左下角一列**（见 poster._HERO_TEXT_COL），
+    # 所以必须把 `text_area` 钉成 left：通道 A 的场景提示词按它决定商品位置
+    # （文字在左 → 商品偏右、左列留出干净负空间，见 `_scene_prompt`）。
+    # 历史缺陷：非穿戴品类默认 `text_area="top"`，`_scene_prompt` 于是把商品放在
+    # **左侧**，而海报文字固定在左下角 → 线上实测"主标题被耳机主体遮挡、层次不清"。
+    if result.get("poster_mode"):
+        result["text_area"] = "left"
     # 海报卖点：标题|一行说明。缺失时由核心卖点兜底（渲染端还会再兜一层）。
     if not result.get("poster_bullets"):
         result["poster_bullets"] = [
@@ -587,48 +598,250 @@ def _imagegen_instruction(product: dict[str, Any], design: dict[str, Any]) -> st
     )
 
 
-def _detail_prompts(product: dict[str, Any], design: dict[str, Any]) -> list[tuple[str, str]]:
-    """为"细节四格"生成 4 组 (标题, 出图提示词)。
+def _detail_caption_candidates(product: dict[str, Any], design: dict[str, Any]) -> list[str]:
+    """细节四格的 4 条标题候选。
 
-    🚨 标题来源优先级：`design["_detail_captions"]`（LLM 专为细节图写的"细节向"标题，
-    描述材质/结构/工艺/配件）→ 卖点标题 → 通用兜底。
+    优先级：`design["_detail_captions"]`（LLM 专为细节图写的"细节向"标题）→ 卖点标题
+    → 通用兜底。注意标题必须在**出图之前**定下来，因为它要驱动取景（见 `_detail_prompts`）。
+    """
+    captions = [str(c).strip() for c in (design.get("_detail_captions") or []) if str(c).strip()]
+    if len(captions) >= 4:
+        return captions[:4]
+    bullets = [str(b).strip() for b in (design.get("_bullets") or []) if str(b).strip()]
+    titles = [b.split("|", 1)[0].strip() for b in bullets][:4]
+    fallbacks = ["Premium Finish", "Fine Craftsmanship", "Built to Last", "In the Box"]
+    while len(titles) < 4:
+        titles.append(fallbacks[len(titles)])
+    return titles
 
-    历史事故：旧版直接复用卖点标题前 4 条，导致**细节带与上方 2×2 卖点网格逐字重复**
-    （同一张海报里 "Lightweight comfort for hours" 出现两次），且语义错位——细节图拍的是
-    "材质/结构"特写，配文却是"使用体验"卖点，图文不符。
+
+# 标题不可用时的取景兜底，按"材质 → 结构 → 耐用 → 配件"四个维度
+_DETAIL_FOCUS_FALLBACK: tuple[str, ...] = (
+    "the surface material and its fine texture",
+    "the seams, joints and edge craftsmanship",
+    "the load-bearing structure and connection points",
+    "the accessories, plugs and connectors",
+)
+
+
+def _focus_phrase(caption: str, fallback: str) -> str:
+    """把细节标题整理成提示词里的"取景主体"短语。
+
+    🚨 这是修「四格同机位」的关键一步。旧版提示词只写 `{color} {material} {name}`，
+    **标题点名的部件根本没进提示词**——标题写 "PU Leather Cushions"，提示词里连
+    cushion 都不出现，模型无从知道该拍哪个局部，只能反复吐"整机 + 灰底"。
+    """
+    t = re.sub(r"[^\w\s&+.-]", " ", str(caption or ""))
+    t = re.sub(r"\s+", " ", t).strip(" .-")
+    return t[:56].lower() if len(t) >= 3 else fallback
+
+
+def _detail_prompts(product: dict[str, Any], captions: list[str]) -> list[tuple[str, str]]:
+    """为"细节四格"生成 4 组 (标题, 文生图提示词) —— **标题驱动取景**。
+
+    历史事故一：旧版直接复用卖点标题前 4 条，导致细节带与 2×2 卖点网格**逐字重复**，
+    且语义错位（细节图拍的是材质/结构，配文却是使用体验）。
+
+    历史事故二（2026-10-12 实测）：四条"角度"措辞互为同义改写
+    （extreme close-up / close-up detail / close-up …），且都不含标题点名的部件 →
+    生产图四格两两相关 **+0.78**，实为同一张整机图。现在把标题的部件名直接写进
+    取景短语，并加"只呈现该局部、不要整机、不要宽景"的硬约束。
     """
     name = str(product.get("name") or product.get("category") or "the product").strip()
     color = str(product.get("color") or "").strip()
     material = str(product.get("material") or "").strip()
-    subject = " ".join(p for p in [color, material, name] if p).strip()
+    subject = " ".join(p for p in [color, material, name] if p).strip() or "the product"
 
-    # 首选：LLM 专门为细节图产出的标题（与卖点网格解耦）
-    captions = [str(c).strip() for c in (design.get("_detail_captions") or []) if str(c).strip()]
-    if len(captions) >= 4:
-        titles = captions[:4]
-    else:
-        bullets = [str(b).strip() for b in (design.get("_bullets") or []) if str(b).strip()]
-        titles = [b.split("|", 1)[0].strip() for b in bullets][:4]
-        fallbacks = ["Premium Finish", "Fine Craftsmanship", "Built to Last", "In the Box"]
-        while len(titles) < 4:
-            titles.append(fallbacks[len(titles)])
-
-    angles = [
-        "extreme close-up macro shot focusing on the surface material and texture",
-        "close-up detail shot of the fine construction and edges",
-        "close-up shot highlighting the durable build quality",
-        "close-up of the product accessories and connectors",
-    ]
     out: list[tuple[str, str]] = []
     for i in range(4):
-        p = (
-            f"Professional e-commerce product detail photography: extreme close-up of a "
-            f"{subject}, {angles[i]}, clean neutral light-gray seamless studio backdrop, "
-            f"soft even studio lighting, sharp focus, ultra detailed, high resolution, "
-            f"premium commercial catalog style, realistic material rendering, no text, no watermark"
+        cap = captions[i] if i < len(captions) else ""
+        focus = _focus_phrase(cap, _DETAIL_FOCUS_FALLBACK[i])
+        prompt = (
+            f"Professional e-commerce product detail macro photography: extreme close-up "
+            f"that fills the entire frame with {focus} of a {subject}; "
+            f"only this part is visible and naturally cropped by the frame edges, "
+            f"do NOT show the whole product, no full-product wide shot; "
+            f"clean neutral light-gray seamless studio backdrop, soft even studio lighting, "
+            f"sharp focus, ultra detailed, high resolution, premium commercial catalog style, "
+            f"realistic material rendering, no text, no watermark"
         )
-        out.append((titles[i], p))
+        out.append((cap, prompt))
     return out
+
+
+def _detail_edit_instructions(captions: list[str], retry: bool = False) -> list[str]:
+    """"细节四格"的**图生图指令**（以商品图为底）。
+
+    🚨 为什么细节图走图生图：旧版细节图是**独立文生图**（只喂"颜色 + 材质 + 商品名"），
+    与主图（通道 A 整图重塑）各自"想象"商品形态 → 实测同一张海报里主图是"没有麦克风
+    杆的耳机"、细节图却出现带 boom mic 的同款异形，**一图多款**，电商场景下等于误导。
+
+    🚨 为什么指令必须带标题部件名：2026-10-12 实测四格两两相关 +0.78 —— 四条指令
+    只说"推近到表面/接缝/受力/配件"，彼此是同义改写，模型无法区分取景。现在把标题
+    部件名作为取景目标写死，并要求"占满整个画面、不要出现完整商品"。
+
+    `retry=True` 用于"雷同闸门"重试：追加一句"换机位"，把撞车的格子推离原构图。
+    """
+    keep = "保持画面中商品的款式、颜色、材质、结构与配件完全不变，不要增删任何部件；"
+    bg = (
+        "将该局部置于干净的浅灰色无缝影棚背景中，柔和平滑的影棚打光，"
+        "画面干净无杂物、无渐变、无强烈阴影，主体清晰锐利，真实产品摄影质感，"
+        "画面中不出现任何文字或水印。"
+    )
+    out: list[str] = []
+    for i in range(4):
+        cap = captions[i] if i < len(captions) else ""
+        focus = _focus_phrase(cap, _DETAIL_FOCUS_FALLBACK[i])
+        out.append(
+            f"{keep}把镜头推进到该商品的「{focus}」，让这一局部占满整个画面，"
+            f"画面里只保留这个局部、不要再出现完整商品；{bg}"
+        )
+    if retry:
+        out = [
+            f"{t}换一个明显不同的机位与构图：相机移到斜侧方重新取景，不要与上一张相同。"
+            for t in out
+        ]
+    return out
+
+
+# 规格/接口/参数类词：细节标题里出现这些词、但商品信息中**没有**出现过，
+# 就属于"编造参数"（虚假宣传风险，且常与主图商品对不上）。
+_SPEC_TOKEN_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:mm|cm|mah|gb|tb|ghz|mhz|hz|w|v|ml|inch)\b"
+    r"|\busb(?:\s?-?\s?c)?\b|\btype\s?-?\s?c\b|\bbluetooth(?:\s?\d(?:\.\d)?)?\b"
+    r"|\baux\b|\bjack\b|\bnfc\b|\bhdmi\b|\bipx?\d+\b",
+    re.IGNORECASE,
+)
+
+
+def _norm_token(tok: str) -> str:
+    return tok.lower().replace(" ", "").replace("-", "")
+
+
+def _spec_tokens(text: str) -> set[str]:
+    """抽取文本里的规格/接口类词（归一化后比较）。"""
+    return {_norm_token(m.group(0)) for m in _SPEC_TOKEN_RE.finditer(text or "")}
+
+
+def _product_text(product: dict[str, Any]) -> str:
+    """把商品 dict 里所有值拼成一段文本，用于判断"这个规格是不是已知的"。"""
+    parts: list[str] = []
+    for v in product.values():
+        if isinstance(v, (list, tuple)):
+            parts.extend(str(x) for x in v)
+        elif isinstance(v, dict):
+            parts.extend(str(x) for x in v.values())
+        elif v is not None:
+            parts.append(str(v))
+    return " ".join(parts)
+
+
+def _resolve_detail_captions(
+    product: dict[str, Any],
+    titles: list[str],
+    grid_titles: set[str],
+    n: int,
+) -> list[str]:
+    """为细节四格定标题：与卖点标题去重，并挡掉"编造参数"的标题。
+
+    🚨 参数幻觉实测事故：商品信息里没有任何接口/规格描述，LLM 却给出了
+    "Dual 3.5mm & USB"、"Reinforced Boom Arm"。这类标题属于**虚假宣传**
+    （而且细节图与主图本就常对不上），一旦标题里出现"商品信息中不存在的
+    规格词"，就改用通用兜底标题。
+    """
+    known_tokens = _spec_tokens(_product_text(product))
+    fallbacks = ["Premium Finish", "Fine Craftsmanship", "Built to Last", "In the Box"]
+    caps: list[str] = []
+    for i in range(n):
+        t = titles[i] if i < len(titles) else ""
+        invented = _spec_tokens(t) - known_tokens
+        if t and t.strip().lower() not in grid_titles and not invented:
+            caps.append(t)
+            continue
+        if invented:
+            logger.warning(
+                f"细节标题疑似编造参数，已弃用: {t!r}（商品信息中不存在 {sorted(invented)}）"
+            )
+        caps.append(fallbacks[i] if i < len(fallbacks) else "Detail View")
+    return caps
+
+
+def _detail_source_bytes(product: dict[str, Any], scene_bytes: bytes) -> bytes:
+    """细节图/细节底图的来源图：**优先商品实拍原图**，否则退回主视觉。
+
+    🚨 为什么不用主视觉：海报主视觉是通道 A「整图重塑」的产物，本身是 AI 重画的，
+    构图固定，拿它当底/edit 起点只会继承同一构图。商品实拍原图（用户上传）真实、
+    清晰、往往多角度，做局部特写远比 AI 主视觉合适。
+
+    读不到原图时安静退回主视觉——细节带是"锦上添花"，不能反过来阻断主流程。
+    """
+    url = product.get("original_image_url")
+    if url:
+        try:
+            from app.services.storage import storage
+
+            data = storage.absolute_path(url).read_bytes()
+            if data:
+                return data
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"商品原图读取失败，细节图改用主视觉做底: {exc}")
+    return scene_bytes
+
+
+def _ensure_detail_diversity(
+    details: list[bytes],
+    regenerate: Callable[[int], bytes | None],
+    fallback_bytes: bytes | None,
+) -> list[bytes]:
+    """「四格雷同」闸门（2026-10-12 实测缺陷）。
+
+    生产图四格两两相关均值 **+0.78**、掩膜质心全部落在 (0.48~0.50, 0.61)、主轴角
+    164~175° —— 细节带实际是**同一张整机图**。生成侧可能被模型（或欠费降级）悄悄
+    压平，而渲染侧此前没有任何把关。
+
+    处置顺序：
+    1) 只对**被判雷同**的格子重试一次（指令追加"换机位"）；
+    2) 重试后仍雷同 → **整批**改用确定性区域裁切（从上图裁出 4 个互不相同的局部）。
+       宁可牺牲一点"AI 质感"，也不让细节带变成四张同一张图。
+
+    任何一步出问题都原样返回 —— 闸门只做增强，不得让细节带变空。
+    """
+    if len(details) < 2:
+        return details
+    try:
+        from app.image.detail_tiles import (
+            DETAIL_ASPECT_RATIO,
+            deterministic_detail_crops,
+            duplicate_pairs,
+            tile_signature,
+        )
+
+        sigs = [tile_signature(b) for b in details]
+        pairs = duplicate_pairs(sigs)
+        if not pairs:
+            return details
+        logger.warning(f"细节四格疑似雷同，尝试重试: {sorted({i for p in pairs for i in p})}")
+        for k in sorted({i for p in pairs for i in p}):
+            try:
+                nb = regenerate(k)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"细节图 {k} 重试失败: {exc}")
+                continue
+            if nb:
+                details[k] = nb
+
+        sigs = [tile_signature(b) for b in details]
+        if duplicate_pairs(sigs) and fallback_bytes:
+            crops = deterministic_detail_crops(
+                fallback_bytes, len(details), DETAIL_ASPECT_RATIO
+            )
+            if len(crops) == len(details):
+                logger.warning("细节四格重试后仍雷同，改用确定性区域裁切兜底")
+                return crops
+        return details
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"细节四格雷同检测异常，跳过闸门: {exc}")
+        return details
 
 
 def _render_poster(
@@ -643,42 +856,89 @@ def _render_poster(
 
     细节图任何一张失败都跳过（细节带可少几格），不影响主视觉。
     """
+    hero_bullets = list(copy0.get("bullets", []) or [])
+    # 卖点网格用 标题|说明（取标题段作展示）
+    grid_bullets = hero_bullets[:4]
+    grid_titles = {str(b).split("|", 1)[0].strip().lower() for b in grid_bullets}
+
     details: list[bytes] = []
     detail_titles: list[str] = []
     try:
-        specs = _detail_prompts(product, design)
-        neg = "people, person, hand, text, letters, watermark, logo, blurry, low quality"
-        # 进度区间 89→97，四张均分
-        for i, (title, prompt) in enumerate(specs):
+        # 🚨 标题必须在**出图之前**定下来：标题要驱动取景（见 `_detail_prompts`）。
+        # 旧版是"先生成、后拼标题"，于是"图拍什么"与"标题写什么"完全脱钩——
+        # 标题点名的部件从没进过提示词，这是四格同机位的直接原因。
+        captions = _resolve_detail_captions(
+            product, _detail_caption_candidates(product, design), grid_titles, 4
+        )
+        specs = _detail_prompts(product, captions)
+        edits = _detail_edit_instructions(captions)
+        retry_edits = _detail_edit_instructions(captions, retry=True)
+
+        # 底图：优先商品实拍原图，并按不同的温和取景裁出 4 份**起点不同**的底图。
+        # 即使模型很保守，四张编辑的输入本身不同，也不会产出四张一模一样的图。
+        src_bytes = _detail_source_bytes(product, scene_bytes)
+        bases = detail_base_variants(src_bytes, 4, DETAIL_ASPECT_RATIO)
+        if len(bases) < 4:
+            bases = [src_bytes] * 4
+
+        # 文生图兜底路径的负面词：显式压制"整机宽景"（与"只拍局部"的目标相反）与
+        # "深色/彩色/有杂物"的背景（否则四张会 1 深 3 浅，拼在一起像临时凑的目录图）。
+        neg = (
+            "people, person, hand, text, letters, watermark, logo, blurry, low quality, "
+            "whole product, full product view, wide shot, "
+            "dark background, black background, colored background, gradient background, "
+            "vignette, busy background, props, clutter"
+        )
+        tile_size = "detail"          # 3:2，与 poster.DETAIL_TILE_ASPECT 一致
+
+        def _render_tile(i: int) -> bytes | None:
+            lo, hi = 89 + int(i * 2), 89 + int((i + 1) * 2)
+            # ① 首选图生图：以商品图为底 → 细节图与主图必然是同一款商品，背景也统一
             try:
-                b = _generate_with_progress(
-                    lambda p=prompt: image_generate(p, "1:1", neg),
-                    89 + int(i * 2),
-                    89 + int((i + 1) * 2),
+                return _generate_with_progress(
+                    lambda: image_edit(bases[i], edits[i], tile_size), lo, hi
                 )
-                details.append(b)
-                detail_titles.append(title)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"细节特写图 {i} 图生图失败，回退文生图: {exc}")
+            # ② 兜底：独立文生图（商品一致性无法保证，但保证细节带不为空）
+            try:
+                return _generate_with_progress(
+                    lambda: image_generate(specs[i][1], tile_size, neg), lo, hi
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"细节特写图 {i} 生成失败，跳过: {exc}")
+                return None
+
+        slots: list[int] = []
+        for i in range(4):
+            b = _render_tile(i)
+            if b:
+                details.append(b)
+                detail_titles.append(captions[i])
+                slots.append(i)
+
+        # 🚨 「四格雷同」闸门：只对撞车的格子重试（换机位指令），仍雷同则整批改用
+        # 确定性区域裁切。见 `_ensure_detail_diversity`。
+        details = _ensure_detail_diversity(
+            details,
+            regenerate=lambda k: _generate_with_progress(
+                lambda: image_edit(
+                    bases[slots[k] % len(bases)],
+                    retry_edits[slots[k] % len(retry_edits)],
+                    tile_size,
+                ),
+                97,
+                98,
+            ),
+            fallback_bytes=src_bytes,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"细节特写图规划失败，细节带留空: {exc}")
 
     emit(97, "image_compose")
-    hero_bullets = copy0.get("bullets", []) or []
-    # 卖点网格用 标题|说明（取标题段作展示）
-    grid_bullets = list(hero_bullets)[:4]
-    grid_titles = {str(b).split("|", 1)[0].strip().lower() for b in grid_bullets}
-    # 细节带标题：优先用 LLM 的 detail_captions（材质/结构向，与卖点网格解耦）；
-    # 若与卖点标题撞车则弃用该条，回退到实际生成的 detail_titles，避免同图重复。
-    caps: list[str] = []
-    for i in range(len(details)):
-        t = detail_titles[i] if i < len(detail_titles) else ""
-        if t and t.strip().lower() not in grid_titles:
-            caps.append(t)
-        else:
-            fallbacks = ["Premium Finish", "Fine Craftsmanship", "Built to Last", "In the Box"]
-            alt = fallbacks[i] if i < len(fallbacks) else "Detail View"
-            caps.append(alt)
+    # 细节带标题：已在出图前定稿（与卖点网格去重、并挡掉"编造参数"，见
+    # `_resolve_detail_captions`）；某格生成失败时标题随之少一条，保持图文对齐。
+    caps = detail_titles
     scenes = [str(s).strip() for s in (product.get("scenes") or []) if str(s).strip()][:4]
 
     image_url = poster_compose(

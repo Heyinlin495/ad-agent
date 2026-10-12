@@ -151,7 +151,7 @@ def test_overlay_headline_has_no_orphan_line():
 
 def test_balanced_wrap_removes_orphan_without_shrinking():
     """`_wrap_text_balanced` 应在**不缩小字号**的前提下消除独字末行。"""
-    font = composer.load_font(150, bold=True)
+    font = composer.load_font(150, bold=True, text="沉浸式听觉盛宴")
     greedy = composer._wrap_text("沉浸式听觉盛宴", font, 500)
     assert len(greedy[-1].strip()) <= 1, "前置条件不成立：贪心换行本应产生孤字"
     balanced = composer._wrap_text_balanced("沉浸式听觉盛宴", font, 500)
@@ -221,8 +221,17 @@ def test_load_base_cover_letterboxes_on_ratio_mismatch():
 # 线上事故（任务 #3）：白字压在浅色木纹/高光上，肉眼几乎不可见。旧实现只在
 # "文字与主体相交"时加衬底，对"不相交但对比度极低"的情况完全不处理。
 
-def test_scrim_added_when_text_on_low_contrast_background():
-    """白字落在浅色背景（无主体相交）时，必须加衬底保证对比度。"""
+def test_text_stays_readable_on_low_contrast_background():
+    """浅色背景上的文案必须**可读**：加衬底，或自动改用深色字。
+
+    🚨 事故背景（任务 #3）：白字压在浅色木纹/高光上，肉眼几乎不可见——旧实现只在
+    "文字与主体相交"时加衬底，对"不相交但对比度极低"完全不处理。
+
+    这里断言的是**最终结果可读**（对比度 ≥ 3.0），而不是"必须存在衬底"这个实现细节：
+    现在的策略是"对比度不足则加衬底"，同时浅底上会优先自动改用**深色字**，两种做法
+    都能让文案可读。锁死某一种实现会让用例随字体/版位变化而假红（实测：换成正体拉丁
+    字体后版位选择变了，用例即误报）。
+    """
     canvas = Image.new("RGBA", (2000, 2000), (196, 168, 124, 255))   # 浅色木纹
     ImageDraw.Draw(canvas).rectangle((900, 900, 1700, 1700), fill=(60, 55, 50, 255))
     texts = {"headline": "Work Comfortable, Work Smart", "subheadline": "Wired USB mouse",
@@ -230,13 +239,19 @@ def test_scrim_added_when_text_on_low_contrast_background():
     design = {"_brand": "X", "_tag": "MOUSE", "_icon": "check",
               "palette": ["#3b3b3b", "#e8e8e8"], "text_area": "top"}
     composer._tpl_hero_overlay(canvas, design, texts, (900, 900, 1700, 1700))
-    assert design.get("_text_scrim") is True, "浅底上未加衬底，文字会看不清"
-    # 衬底后文字色应与衬底形成足够对比
-    box = design["_text_box"]
-    reg = (box[0] - 6, box[1] - 6, box[2] + 6, box[3] + 6)
-    tc = composer._text_color_for(canvas, reg)
+
+    tc = design.get("_text_color")
+    assert tc, "排版器应回传最终字色 _text_color（线上排查与回归都依赖它）"
     lum_t = 0.299 * tc[0] + 0.587 * tc[1] + 0.114 * tc[2]
-    assert composer._contrast_ratio(composer._region_luminance(canvas, reg), lum_t) >= 3.0
+
+    box = design["_text_box"]
+    reg = (max(0, box[0] - 6), max(0, box[1] - 6),
+           min(canvas.width, box[2] + 6), min(canvas.height, box[3] + 6))
+    cr = composer._contrast_ratio(composer._region_luminance(canvas, reg), lum_t)
+    assert cr >= 3.0, f"浅底上文案对比度不足（{cr:.2f}），且未加衬底：scrim={design.get('_text_scrim')} tc={tc}"
+    if not design.get("_text_scrim"):
+        # 没加衬底就必须是"自动改用深色字"那条路径，不能白字裸奔
+        assert lum_t < 128, f"浅底上既未加衬底、字色也不是深色（lum={lum_t:.0f}）"
 
 
 def test_needs_scrim_false_on_uniform_dark_background():

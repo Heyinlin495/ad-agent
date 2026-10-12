@@ -62,3 +62,12 @@ $core_points
 8. 不要堆砌大量文字，不要生成长段落，不要使用无法验证的数据。
 9. **输出前逐词自查拼写**（重点检查 headline / subheadline / bullets / cta）：不得出现拼写错误、
    缺字母、多字母、单词粘连；英文单词之间必须有空格。发现错误必须自行改正后再输出。
+10. **headline 必须是地道、读得通的广告短句**（像 slogan，不是把卖点词硬拼成的词组）：
+    - 句式优先"两个短句并列"，用**句点或逗号**分隔；推荐全大写的口号式写法，例如
+      `CLEAR CALLS. ZERO CHARGING.`、`Clear Calls, Zero Charging.`；
+      **禁止** `Clear Calls No Charging` 这种没有标点、读不通的串。
+    - 每个短句 2-4 个词，整条 headline 不超过 6 个词；要有广告语气（陈述/承诺），
+      而不是一串并列名词。
+    - subheadline 补一个**不同维度**的利益点，用自然口语，例如
+      `Wired Comfort for Every Workday`、`Built for Long Hours at Your Desk`；
+      不得与 headline 语义重复（例如都只在讲"有线/免充电"）。
