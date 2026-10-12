@@ -150,15 +150,27 @@ def test_overlay_headline_has_no_orphan_line():
 
 
 def test_balanced_wrap_removes_orphan_without_shrinking():
-    """`_wrap_text_balanced` 应在**不缩小字号**的前提下消除独字末行。"""
-    font = composer.load_font(150, bold=True, text="沉浸式听觉盛宴")
-    greedy = composer._wrap_text("沉浸式听觉盛宴", font, 500)
-    assert len(greedy[-1].strip()) <= 1, "前置条件不成立：贪心换行本应产生孤字"
-    balanced = composer._wrap_text_balanced("沉浸式听觉盛宴", font, 500)
+    """`_wrap_text_balanced` 应在**不缩小字号**的前提下消除独字末行。
+
+    注意：换行结果取决于**具体字体的度量**（CI runner 与本机 Windows 装载的 CJK
+    字体不同，同一栏宽下每行容纳的字数并不一致）。所以这里**不写死栏宽**，而是按
+    实际字宽反推出一个"必然产生孤字末行"的栏宽——否则用例会随字体漂移而假红
+    （历史故障：本机 500px 排成 3/3/1 有孤字，CI 字体排成 3/2/2 无孤字，前置断言直接失败）。
+    """
+    text = "沉浸式听觉盛宴"
+    font = composer.load_font(150, bold=True, text=text)
+    # 栏宽取"前 len-1 个字刚好放得下"：贪心排成 N/N/N…/1，末行必为孤字。
+    width = int(font.getlength(text[:-1]))
+    if width <= 0:                      # 字体无法度量中文（无 CJK 字形），用例不适用
+        pytest.skip("当前字体无法度量中文，跳过孤字用例")
+    greedy = composer._wrap_text(text, font, width)
+    assert len(greedy) >= 2 and len(greedy[-1].strip()) <= 1, (
+        f"前置条件不成立：贪心换行本应产生孤字，实际 {greedy!r}")
+    balanced = composer._wrap_text_balanced(text, font, width)
     assert len(balanced) == len(greedy), "行数不应增加"
     assert len(balanced[-1].strip()) > 1, f"均衡换行后仍有孤字: {balanced}"
     # 不能溢出栏宽
-    assert all(font.getlength(ln) <= 500 for ln in balanced), f"均衡换行溢出栏宽: {balanced}"
+    assert all(font.getlength(ln) <= width for ln in balanced), f"均衡换行溢出栏宽: {balanced}"
 
 
 # ---------- text_area 硬约束（P0 修复）----------
